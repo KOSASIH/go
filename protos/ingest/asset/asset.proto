@@ -1,0 +1,16 @@
+syntax = "proto3";
+
+package asset;
+
+message IssuedAsset {
+  string asset_code = 1;               // Asset code (e.g., USD, BTC)
+  string issuer = 2;                  // Issuer account address
+}
+
+// Asset message that can represent either a native asset or an issued asset
+message Asset {
+  oneof asset_type {
+    bool native = 1;                  // Native asset (XLM)
+    IssuedAsset issued_asset = 2;      // Issued asset - via classic operations.
+  }
+}

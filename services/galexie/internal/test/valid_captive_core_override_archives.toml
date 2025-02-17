@@ -1,0 +1,4 @@
+[stellar_core_config]
+network="pubnet"
+history_archive_urls = ["http://testarchive"]
+stellar_core_binary_path = "test/stellar-core"

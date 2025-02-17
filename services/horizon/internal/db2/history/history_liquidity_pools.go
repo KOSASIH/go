@@ -5,6 +5,7 @@ import (
 	"sort"
 
 	sq "github.com/Masterminds/squirrel"
+
 	"github.com/stellar/go/support/db"
 	"github.com/stellar/go/support/errors"
 )
@@ -12,8 +13,8 @@ import (
 // QHistoryLiquidityPools defines account related queries.
 type QHistoryLiquidityPools interface {
 	CreateHistoryLiquidityPools(ctx context.Context, poolIDs []string, batchSize int) (map[string]int64, error)
-	NewOperationLiquidityPoolBatchInsertBuilder(maxBatchSize int) OperationLiquidityPoolBatchInsertBuilder
-	NewTransactionLiquidityPoolBatchInsertBuilder(maxBatchSize int) TransactionLiquidityPoolBatchInsertBuilder
+	NewOperationLiquidityPoolBatchInsertBuilder() OperationLiquidityPoolBatchInsertBuilder
+	NewTransactionLiquidityPoolBatchInsertBuilder() TransactionLiquidityPoolBatchInsertBuilder
 }
 
 // CreateHistoryLiquidityPools creates rows in the history_liquidity_pools table for a given list of ids.
@@ -101,63 +102,61 @@ func (q *Q) LiquidityPoolByID(ctx context.Context, poolID string) (dest HistoryL
 }
 
 type OperationLiquidityPoolBatchInsertBuilder interface {
-	Add(ctx context.Context, operationID, internalID int64) error
-	Exec(ctx context.Context) error
+	Add(operationID int64, lp FutureLiquidityPoolID) error
+	Exec(ctx context.Context, session db.SessionInterface) error
 }
 
 type operationLiquidityPoolBatchInsertBuilder struct {
-	builder db.BatchInsertBuilder
+	table   string
+	builder db.FastBatchInsertBuilder
 }
 
-func (q *Q) NewOperationLiquidityPoolBatchInsertBuilder(maxBatchSize int) OperationLiquidityPoolBatchInsertBuilder {
+func (q *Q) NewOperationLiquidityPoolBatchInsertBuilder() OperationLiquidityPoolBatchInsertBuilder {
 	return &operationLiquidityPoolBatchInsertBuilder{
-		builder: db.BatchInsertBuilder{
-			Table:        q.GetTable("history_operation_liquidity_pools"),
-			MaxBatchSize: maxBatchSize,
-		},
+		table:   "history_operation_liquidity_pools",
+		builder: db.FastBatchInsertBuilder{},
 	}
 }
 
 // Add adds a new operation claimable balance to the batch
-func (i *operationLiquidityPoolBatchInsertBuilder) Add(ctx context.Context, operationID, internalID int64) error {
-	return i.builder.Row(ctx, map[string]interface{}{
+func (i *operationLiquidityPoolBatchInsertBuilder) Add(operationID int64, lp FutureLiquidityPoolID) error {
+	return i.builder.Row(map[string]interface{}{
 		"history_operation_id":      operationID,
-		"history_liquidity_pool_id": internalID,
+		"history_liquidity_pool_id": lp,
 	})
 }
 
 // Exec flushes all pending operation claimable balances to the db
-func (i *operationLiquidityPoolBatchInsertBuilder) Exec(ctx context.Context) error {
-	return i.builder.Exec(ctx)
+func (i *operationLiquidityPoolBatchInsertBuilder) Exec(ctx context.Context, session db.SessionInterface) error {
+	return i.builder.Exec(ctx, session, i.table)
 }
 
 type TransactionLiquidityPoolBatchInsertBuilder interface {
-	Add(ctx context.Context, transactionID, internalID int64) error
-	Exec(ctx context.Context) error
+	Add(transactionID int64, lp FutureLiquidityPoolID) error
+	Exec(ctx context.Context, session db.SessionInterface) error
 }
 
 type transactionLiquidityPoolBatchInsertBuilder struct {
-	builder db.BatchInsertBuilder
+	table   string
+	builder db.FastBatchInsertBuilder
 }
 
-func (q *Q) NewTransactionLiquidityPoolBatchInsertBuilder(maxBatchSize int) TransactionLiquidityPoolBatchInsertBuilder {
+func (q *Q) NewTransactionLiquidityPoolBatchInsertBuilder() TransactionLiquidityPoolBatchInsertBuilder {
 	return &transactionLiquidityPoolBatchInsertBuilder{
-		builder: db.BatchInsertBuilder{
-			Table:        q.GetTable("history_transaction_liquidity_pools"),
-			MaxBatchSize: maxBatchSize,
-		},
+		table:   "history_transaction_liquidity_pools",
+		builder: db.FastBatchInsertBuilder{},
 	}
 }
 
 // Add adds a new transaction claimable balance to the batch
-func (i *transactionLiquidityPoolBatchInsertBuilder) Add(ctx context.Context, transactionID, internalID int64) error {
-	return i.builder.Row(ctx, map[string]interface{}{
+func (i *transactionLiquidityPoolBatchInsertBuilder) Add(transactionID int64, lp FutureLiquidityPoolID) error {
+	return i.builder.Row(map[string]interface{}{
 		"history_transaction_id":    transactionID,
-		"history_liquidity_pool_id": internalID,
+		"history_liquidity_pool_id": lp,
 	})
 }
 
 // Exec flushes all pending transaction claimable balances to the db
-func (i *transactionLiquidityPoolBatchInsertBuilder) Exec(ctx context.Context) error {
-	return i.builder.Exec(ctx)
+func (i *transactionLiquidityPoolBatchInsertBuilder) Exec(ctx context.Context, session db.SessionInterface) error {
+	return i.builder.Exec(ctx, session, i.table)
 }

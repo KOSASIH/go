@@ -14,6 +14,8 @@ import (
 	"github.com/stellar/go/toid"
 )
 
+const genesisLedger = 2
+
 // UnmarshalDetails unmarshals the details of this effect into `dest`
 func (r *Effect) UnmarshalDetails(dest interface{}) error {
 	if !r.DetailsString.Valid {
@@ -69,75 +71,86 @@ func (r *Effect) PagingToken() string {
 	return fmt.Sprintf("%d-%d", r.HistoryOperationID, r.Order)
 }
 
-// Effects provides a helper to filter rows from the `history_effects`
-// table with pre-defined filters.  See `TransactionsQ` methods for the
-// available filters.
-func (q *Q) Effects() *EffectsQ {
-	return &EffectsQ{
-		parent: q,
-		sql:    selectEffect,
+// Effects returns a page of effects without any filters besides the cursor
+func (q *Q) Effects(ctx context.Context, page db2.PageQuery, oldestLedger int32) ([]Effect, error) {
+	op, idx, err := parseEffectsCursor(page)
+	if err != nil {
+		return nil, err
 	}
+
+	var rows []Effect
+	query := selectEffect
+	// we do not use selectEffectsPage() because we have found the
+	// query below to be more efficient when there are no other constraints
+	// such as filtering by account / ledger / transaction / etc
+	switch page.Order {
+	case "asc":
+		query = query.
+			Where("(heff.history_operation_id, heff.order) > (?, ?)", op, idx).
+			OrderBy("heff.history_operation_id asc, heff.order asc")
+	case "desc":
+		if lowerBound := lowestLedgerBound(oldestLedger); lowerBound > 0 {
+			query = query.Where("heff.history_operation_id > ?", lowerBound)
+		}
+		query = query.
+			Where("(heff.history_operation_id, heff.order) < (?, ?)", op, idx).
+			OrderBy("heff.history_operation_id desc, heff.order desc")
+	}
+
+	query = query.Limit(page.Limit)
+
+	if err = q.Select(ctx, &rows, query); err != nil {
+		return nil, err
+	}
+	return rows, nil
 }
 
-// ForAccount filters the operations collection to a specific account
-func (q *EffectsQ) ForAccount(ctx context.Context, aid string) *EffectsQ {
+// EffectsForAccount returns a page of effects for a given account
+func (q *Q) EffectsForAccount(ctx context.Context, aid string, page db2.PageQuery, oldestLedger int32) ([]Effect, error) {
 	var account Account
-	q.Err = q.parent.AccountByAddress(ctx, &account, aid)
-	if q.Err != nil {
-		return q
+	if err := q.AccountByAddress(ctx, &account, aid); err != nil {
+		return nil, err
 	}
 
-	q.sql = q.sql.Where("heff.history_account_id = ?", account.ID)
-
-	return q
+	query := selectEffect.Where("heff.history_account_id = ?", account.ID)
+	return q.selectEffectsPage(ctx, query, page, oldestLedger)
 }
 
-// ForLedger filters the query to only effects in a specific ledger,
-// specified by its sequence.
-func (q *EffectsQ) ForLedger(ctx context.Context, seq int32) *EffectsQ {
+// EffectsForLedger returns a page of effects for a given ledger sequence
+func (q *Q) EffectsForLedger(ctx context.Context, seq int32, page db2.PageQuery) ([]Effect, error) {
 	var ledger Ledger
-	q.Err = q.parent.LedgerBySequence(ctx, &ledger, seq)
-	if q.Err != nil {
-		return q
+	if err := q.LedgerBySequence(ctx, &ledger, seq); err != nil {
+		return nil, err
 	}
 
 	start := toid.ID{LedgerSequence: seq}
 	end := toid.ID{LedgerSequence: seq + 1}
-	q.sql = q.sql.Where(
+	query := selectEffect.Where(
 		"heff.history_operation_id >= ? AND heff.history_operation_id < ?",
 		start.ToInt64(),
 		end.ToInt64(),
 	)
-
-	return q
+	return q.selectEffectsPage(ctx, query, page, 0)
 }
 
-// ForOperation filters the query to only effects in a specific operation,
-// specified by its id.
-func (q *EffectsQ) ForOperation(id int64) *EffectsQ {
+// EffectsForOperation returns a page of effects for a given operation id.
+func (q *Q) EffectsForOperation(ctx context.Context, id int64, page db2.PageQuery) ([]Effect, error) {
 	start := toid.Parse(id)
 	end := start
 	end.IncOperationOrder()
-	q.sql = q.sql.Where(
+	query := selectEffect.Where(
 		"heff.history_operation_id >= ? AND heff.history_operation_id < ?",
 		start.ToInt64(),
 		end.ToInt64(),
 	)
-
-	return q
+	return q.selectEffectsPage(ctx, query, page, 0)
 }
 
-// ForLiquidityPool filters the query to only effects in a specific liquidity pool,
-// specified by its id.
-func (q *EffectsQ) ForLiquidityPool(ctx context.Context, page db2.PageQuery, id string) *EffectsQ {
-	if q.Err != nil {
-		return q
-	}
-
+// EffectsForLiquidityPool returns a page of effects for a given liquidity pool.
+func (q *Q) EffectsForLiquidityPool(ctx context.Context, id string, page db2.PageQuery, oldestLedger int32) ([]Effect, error) {
 	op, _, err := page.CursorInt64Pair(db2.DefaultPairSep)
 	if err != nil {
-		q.Err = err
-		return q
+		return nil, err
 	}
 
 	query := `SELECT holp.history_operation_id
@@ -150,58 +163,70 @@ func (q *EffectsQ) ForLiquidityPool(ctx context.Context, page db2.PageQuery, id 
 	case "desc":
 		query += "AND holp.history_operation_id <= ? ORDER BY holp.history_operation_id desc LIMIT ?"
 	default:
-		q.Err = errors.Errorf("invalid paging order: %s", page.Order)
-		return q
+		return nil, errors.Errorf("invalid paging order: %s", page.Order)
 	}
 
 	var liquidityPoolOperationIDs []int64
-	err = q.parent.SelectRaw(ctx, &liquidityPoolOperationIDs, query, id, op, page.Limit)
+	err = q.SelectRaw(ctx, &liquidityPoolOperationIDs, query, id, op, page.Limit)
 	if err != nil {
-		q.Err = err
-		return q
+		return nil, err
 	}
 
-	q.sql = q.sql.Where(map[string]interface{}{
-		"heff.history_operation_id": liquidityPoolOperationIDs,
-	})
-	return q
+	return q.selectEffectsPage(
+		ctx,
+		selectEffect.Where(map[string]interface{}{
+			"heff.history_operation_id": liquidityPoolOperationIDs,
+		}),
+		page,
+		oldestLedger,
+	)
 }
 
-// ForTransaction filters the query to only effects in a specific
-// transaction, specified by the transactions's hex-encoded hash.
-func (q *EffectsQ) ForTransaction(ctx context.Context, hash string) *EffectsQ {
+// EffectsForTransaction returns a page of effects for a given transaction
+func (q *Q) EffectsForTransaction(ctx context.Context, hash string, page db2.PageQuery) ([]Effect, error) {
 	var tx Transaction
-	q.Err = q.parent.TransactionByHash(ctx, &tx, hash)
-	if q.Err != nil {
-		return q
+	if err := q.TransactionByHash(ctx, &tx, hash); err != nil {
+		return nil, err
 	}
 
 	start := toid.Parse(tx.ID)
 	end := start
 	end.TransactionOrder++
-	q.sql = q.sql.Where(
-		"heff.history_operation_id >= ? AND heff.history_operation_id < ?",
-		start.ToInt64(),
-		end.ToInt64(),
-	)
 
-	return q
+	return q.selectEffectsPage(
+		ctx,
+		selectEffect.Where("heff.history_operation_id >= ? AND heff.history_operation_id < ?",
+			start.ToInt64(),
+			end.ToInt64(),
+		),
+		page,
+		0,
+	)
 }
 
-// Page specifies the paging constraints for the query being built by `q`.
-func (q *EffectsQ) Page(page db2.PageQuery) *EffectsQ {
-	if q.Err != nil {
-		return q
-	}
-
+func parseEffectsCursor(page db2.PageQuery) (int64, int64, error) {
 	op, idx, err := page.CursorInt64Pair(db2.DefaultPairSep)
 	if err != nil {
-		q.Err = err
-		return q
+		return 0, 0, err
 	}
 
 	if idx > math.MaxInt32 {
 		idx = math.MaxInt32
+	}
+	return op, idx, nil
+}
+
+func lowestLedgerBound(oldestLedger int32) int64 {
+	if oldestLedger <= genesisLedger {
+		return 0
+	}
+	return toid.AfterLedger(oldestLedger - 1).ToInt64()
+}
+
+func (q *Q) selectEffectsPage(ctx context.Context, query sq.SelectBuilder, page db2.PageQuery, oldestLedger int32) ([]Effect, error) {
+	op, idx, err := parseEffectsCursor(page)
+	if err != nil {
+		return nil, err
 	}
 
 	// NOTE: Remember to test the queries below with EXPLAIN / EXPLAIN ANALYZE
@@ -210,7 +235,7 @@ func (q *EffectsQ) Page(page db2.PageQuery) *EffectsQ {
 	// DB will perform a full table scan.
 	switch page.Order {
 	case "asc":
-		q.sql = q.sql.
+		query = query.
 			Where(`(
 					 heff.history_operation_id >= ?
 				AND (
@@ -219,7 +244,10 @@ func (q *EffectsQ) Page(page db2.PageQuery) *EffectsQ {
 				))`, op, op, op, idx).
 			OrderBy("heff.history_operation_id asc, heff.order asc")
 	case "desc":
-		q.sql = q.sql.
+		if lowerBound := lowestLedgerBound(oldestLedger); lowerBound > 0 {
+			query = query.Where("heff.history_operation_id > ?", lowerBound)
+		}
+		query = query.
 			Where(`(
 					 heff.history_operation_id <= ?
 				AND (
@@ -229,24 +257,20 @@ func (q *EffectsQ) Page(page db2.PageQuery) *EffectsQ {
 			OrderBy("heff.history_operation_id desc, heff.order desc")
 	}
 
-	q.sql = q.sql.Limit(page.Limit)
-	return q
-}
+	query = query.Limit(page.Limit)
 
-// Select loads the results of the query specified by `q` into `dest`.
-func (q *EffectsQ) Select(ctx context.Context, dest interface{}) error {
-	if q.Err != nil {
-		return q.Err
+	var rows []Effect
+	if err = q.Select(ctx, &rows, query); err != nil {
+		return nil, err
 	}
 
-	q.Err = q.parent.Select(ctx, dest, q.sql)
-	return q.Err
+	return rows, nil
 }
 
 // QEffects defines history_effects related queries.
 type QEffects interface {
 	QCreateAccountsHistory
-	NewEffectBatchInsertBuilder(maxBatchSize int) EffectBatchInsertBuilder
+	NewEffectBatchInsertBuilder() EffectBatchInsertBuilder
 }
 
 var selectEffect = sq.Select("heff.*, hacc.address").

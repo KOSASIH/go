@@ -67,7 +67,7 @@ func TestTransactionJSONMarshal(t *testing.T) {
 // Test that a typical friendbot fund response can unmarshal to the Transaction
 // type. The horizonclient uses the Transaction type for friendbot responses
 // also, but their response is a slimmed down version of the full transaction
-// response. This test confirms there are no errors unmarshalling that slimmed
+// response. This test confirms there are no errors unmarshaling that slimmed
 // down version.
 func TestTransactionUnmarshalsFriendbotFund(t *testing.T) {
 	friendbotFundResponse := `{

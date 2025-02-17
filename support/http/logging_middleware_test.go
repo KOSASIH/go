@@ -6,9 +6,10 @@ import (
 
 	"github.com/go-chi/chi"
 	"github.com/go-chi/chi/middleware"
+	"github.com/stretchr/testify/assert"
+
 	"github.com/stellar/go/support/http/httptest"
 	"github.com/stellar/go/support/log"
-	"github.com/stretchr/testify/assert"
 )
 
 // setXFFMiddleware sets "X-Forwarded-For" header to test LoggingMiddlewareWithOptions.
@@ -143,7 +144,7 @@ func TestHTTPMiddlewareWithOptions(t *testing.T) {
 		assert.Equal(t, req1, logged[2].Data["req"])
 		assert.Equal(t, "/path/1234", logged[2].Data["path"])
 		assert.Equal(t, "/path/{value}", logged[2].Data["route"])
-		assert.Equal(t, 9, len(logged[2].Data))
+		assert.Equal(t, 10, len(logged[2].Data))
 
 		assert.Equal(t, "starting request", logged[3].Message)
 		assert.Equal(t, "http", logged[3].Data["subsys"])
@@ -162,7 +163,7 @@ func TestHTTPMiddlewareWithOptions(t *testing.T) {
 		assert.Equal(t, req2, logged[4].Data["req"])
 		assert.Equal(t, "/not_found", logged[4].Data["path"])
 		assert.Equal(t, "/not_found", logged[4].Data["route"])
-		assert.Equal(t, 9, len(logged[4].Data))
+		assert.Equal(t, 10, len(logged[4].Data))
 
 		assert.Equal(t, "starting request", logged[5].Message)
 		assert.Equal(t, "http", logged[5].Data["subsys"])
@@ -181,7 +182,7 @@ func TestHTTPMiddlewareWithOptions(t *testing.T) {
 		assert.Equal(t, req3, logged[6].Data["req"])
 		assert.Equal(t, "/really_not_found", logged[6].Data["path"])
 		assert.Equal(t, "", logged[6].Data["route"])
-		assert.Equal(t, 9, len(logged[6].Data))
+		assert.Equal(t, 10, len(logged[6].Data))
 	}
 }
 

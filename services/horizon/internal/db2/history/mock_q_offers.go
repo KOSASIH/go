@@ -40,3 +40,8 @@ func (m *MockQOffers) CompactOffers(ctx context.Context, cutOffSequence uint32) 
 	a := m.Called(ctx, cutOffSequence)
 	return a.Get(0).(int64), a.Error(1)
 }
+
+func (m *MockQOffers) NewOffersBatchInsertBuilder() OffersBatchInsertBuilder {
+	a := m.Called()
+	return a.Get(0).(OffersBatchInsertBuilder)
+}

@@ -577,7 +577,7 @@ func TestOrderbookGetResource(t *testing.T) {
 	assert.NoError(t, q.TruncateTables(tt.Ctx, []string{"offers"}))
 	assert.NoError(t, q.UpsertOffers(tt.Ctx, offers))
 
-	assert.NoError(t, q.BeginTx(&sql.TxOptions{
+	assert.NoError(t, q.BeginTx(tt.Ctx, &sql.TxOptions{
 		Isolation: sql.LevelRepeatableRead,
 		ReadOnly:  true,
 	}))

@@ -1,0 +1,7 @@
+user_agent = "useragent_x"
+
+[stellar_core_config]
+stellar_core_binary_path = "test/stellar-core"
+network = "pubnet"  
+
+

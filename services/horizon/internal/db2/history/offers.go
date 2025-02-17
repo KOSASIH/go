@@ -5,8 +5,8 @@ import (
 	"database/sql"
 
 	sq "github.com/Masterminds/squirrel"
-	"github.com/jmoiron/sqlx"
 
+	"github.com/stellar/go/support/db"
 	"github.com/stellar/go/support/errors"
 )
 
@@ -20,6 +20,7 @@ type QOffers interface {
 	GetUpdatedOffers(ctx context.Context, newerThanSequence uint32) ([]Offer, error)
 	UpsertOffers(ctx context.Context, offers []Offer) error
 	CompactOffers(ctx context.Context, cutOffSequence uint32) (int64, error)
+	NewOffersBatchInsertBuilder() OffersBatchInsertBuilder
 }
 
 func (q *Q) CountOffers(ctx context.Context) (int, error) {
@@ -107,7 +108,7 @@ func (q *Q) StreamAllOffers(ctx context.Context, callback func(Offer) error) err
 }
 
 func (q *Q) streamAllOffersBatch(ctx context.Context, lastId int64, limit uint64, callback func(Offer) error) (int64, error) {
-	var rows *sqlx.Rows
+	var rows *db.Rows
 	var err error
 
 	rows, err = q.Query(ctx, selectOffers.

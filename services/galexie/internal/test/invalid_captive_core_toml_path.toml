@@ -1,0 +1,5 @@
+[stellar_core_config]
+captive_core_toml_path = "test/notfound.cfg"
+stellar_core_binary_path = "test/stellar-core"
+history_archive_urls = ["http://testarchive"]
+network_passphrase = "test"

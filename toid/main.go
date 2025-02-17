@@ -1,7 +1,6 @@
 package toid
 
 import (
-	"errors"
 	"fmt"
 )
 
@@ -92,11 +91,11 @@ func AfterLedger(seq int32) *ID {
 // this value make sure < order is used.
 func LedgerRangeInclusive(from, to int32) (int64, int64, error) {
 	if from > to {
-		return 0, 0, errors.New("Invalid range: from > to")
+		return 0, 0, fmt.Errorf("invalid range: from > to")
 	}
 
 	if from <= 0 || to <= 0 {
-		return 0, 0, errors.New("Invalid range: from or to negative")
+		return 0, 0, fmt.Errorf("invalid range: from or to negative")
 	}
 
 	var toidFrom, toidTo int64
@@ -124,6 +123,9 @@ func (id *ID) IncOperationOrder() {
 }
 
 // New creates a new total order ID
+//
+// FIXME: I feel like since ledger sequences are uint32s, TOIDs should
+// take that into account for the ledger parameter...
 func New(ledger int32, tx int32, op int32) *ID {
 	return &ID{
 		LedgerSequence:   ledger,

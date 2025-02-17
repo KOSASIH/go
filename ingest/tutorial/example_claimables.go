@@ -8,6 +8,7 @@ import (
 
 	"github.com/stellar/go/historyarchive"
 	"github.com/stellar/go/ingest"
+	"github.com/stellar/go/support/storage"
 	"github.com/stellar/go/xdr"
 )
 
@@ -15,10 +16,12 @@ func claimables() {
 	// Open a history archive using our existing configuration details.
 	historyArchive, err := historyarchive.Connect(
 		config.HistoryArchiveURLs[0],
-		historyarchive.ConnectOptions{
+		historyarchive.ArchiveOptions{
 			NetworkPassphrase: config.NetworkPassphrase,
-			S3Region:          "us-west-1",
-			UnsignedRequests:  false,
+			ConnectOptions: storage.ConnectOptions{
+				S3Region:         "us-west-1",
+				UnsignedRequests: false,
+			},
 		},
 	)
 	panicIf(err)

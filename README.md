@@ -45,6 +45,7 @@ In addition to the other top-level packages, there are a few special directories
 * **support/scripts** contains single-file go programs and bash scripts used to support the development of this repo. 
 * **services** contains packages that compile to applications that are long-running processes (such as API servers).
 * **tools** contains packages that compile to command line applications.
+* **protos** contains the protobuf definitions for data-models that we want to generate for use with external stakeholders. Refer to [protos/README.md](./protos/README.md) for more information about code structure in `protos` directory
 
 Each of these directories have their own README file that explain further the nature of their contents.
 
@@ -80,6 +81,6 @@ Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for more detai
 
 ### Developing
 
-See [DEVELOPING.md](DEVELOPING.md) for helpful instructions for getting started developing code in this repository.
+See [GUIDE_FOR_DEVELOPERS.md](/services/horizon/internal/docs/GUIDE_FOR_DEVELOPERS.md) for helpful instructions for getting started developing code in this repository.
 
 [Stellar Development Foundation]: https://stellar.org

@@ -67,3 +67,9 @@ func NewServer(t *testing.T, handler http.Handler) *Server {
 		Expect: httpexpect.New(t, server.URL),
 	}
 }
+
+type ResponseData struct {
+	Status int
+	Body   string
+	Header http.Header
+}

@@ -51,11 +51,11 @@ func SortTxsForHash(txset *xdr.TransactionSet) error {
 		hsh: make([]Hash, len(txset.Txs)),
 	}
 	for i, tx := range txset.Txs {
-		h, err := HashXdr(&tx)
+		h, err := xdr.HashXdr(&tx)
 		if err != nil {
 			return err
 		}
-		bh.hsh[i] = h
+		bh.hsh[i] = Hash(h)
 	}
 	sort.Sort(bh)
 	return nil
@@ -86,18 +86,18 @@ func HashEmptyTxSet(previousLedgerHash Hash) Hash {
 }
 
 func (arch *Archive) VerifyLedgerHeaderHistoryEntry(entry *xdr.LedgerHeaderHistoryEntry) error {
-	h, err := HashXdr(&entry.Header)
+	h, err := xdr.HashXdr(&entry.Header)
 	if err != nil {
 		return err
 	}
-	if h != Hash(entry.Hash) {
+	if h != entry.Hash {
 		return fmt.Errorf("Ledger %d expected hash %s, got %s",
 			entry.Header.LedgerSeq, Hash(entry.Hash), Hash(h))
 	}
 	arch.mutex.Lock()
 	defer arch.mutex.Unlock()
 	seq := uint32(entry.Header.LedgerSeq)
-	arch.actualLedgerHashes[seq] = h
+	arch.actualLedgerHashes[seq] = Hash(h)
 	arch.expectLedgerHashes[seq-1] = Hash(entry.Header.PreviousLedgerHash)
 	arch.expectTxSetHashes[seq] = Hash(entry.Header.ScpValue.TxSetHash)
 	arch.expectTxResultSetHashes[seq] = Hash(entry.Header.TxSetResultHash)
@@ -117,13 +117,13 @@ func (arch *Archive) VerifyTransactionHistoryEntry(entry *xdr.TransactionHistory
 }
 
 func (arch *Archive) VerifyTransactionHistoryResultEntry(entry *xdr.TransactionHistoryResultEntry) error {
-	h, err := HashXdr(&entry.TxResultSet)
+	h, err := xdr.HashXdr(&entry.TxResultSet)
 	if err != nil {
 		return err
 	}
 	arch.mutex.Lock()
 	defer arch.mutex.Unlock()
-	arch.actualTxResultSetHashes[uint32(entry.LedgerSeq)] = h
+	arch.actualTxResultSetHashes[uint32(entry.LedgerSeq)] = Hash(h)
 	return nil
 }
 

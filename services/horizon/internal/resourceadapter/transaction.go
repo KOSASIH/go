@@ -4,10 +4,8 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
-	"strconv"
-	"time"
-
 	"github.com/guregu/null"
+	"strconv"
 
 	horizonContext "github.com/stellar/go/services/horizon/internal/context"
 	"github.com/stellar/go/xdr"
@@ -23,6 +21,7 @@ func PopulateTransaction(
 	transactionHash string,
 	dest *protocol.Transaction,
 	row history.Transaction,
+	skipTxMeta bool,
 ) error {
 	dest.ID = transactionHash
 	dest.PT = row.PagingToken()
@@ -43,7 +42,11 @@ func PopulateTransaction(
 	dest.OperationCount = row.OperationCount
 	dest.EnvelopeXdr = row.TxEnvelope
 	dest.ResultXdr = row.TxResult
-	dest.ResultMetaXdr = row.TxMeta
+	if skipTxMeta {
+		dest.ResultMetaXdr = ""
+	} else {
+		dest.ResultMetaXdr = row.TxMeta
+	}
 	dest.FeeMetaXdr = row.TxFeeMeta
 	dest.MemoType = row.MemoType
 	dest.Memo = row.Memo.String
@@ -61,10 +64,6 @@ func PopulateTransaction(
 	dest.Preconditions = &protocol.TransactionPreconditions{}
 
 	if !row.TimeBounds.Null {
-		// Action needed in release: horizon-v3.0.0: remove ValidBefore and ValidAfter
-		dest.ValidBefore = timeString(row.TimeBounds.Upper)
-		dest.ValidAfter = timeString(row.TimeBounds.Lower)
-
 		dest.Preconditions.TimeBounds = &protocol.TransactionPreconditionsTimebounds{
 			MaxTime: timestampString(row.TimeBounds.Upper),
 			MinTime: timestampString(row.TimeBounds.Lower),
@@ -150,14 +149,6 @@ func memoBytes(envelopeXDR string) (string, error) {
 
 	memo := *parsedEnvelope.Memo().Text
 	return base64.StdEncoding.EncodeToString([]byte(memo)), nil
-}
-
-func timeString(in null.Int) string {
-	if !in.Valid {
-		return ""
-	}
-
-	return time.Unix(in.Int64, 0).UTC().Format(time.RFC3339)
 }
 
 func timestampString(in null.Int) string {

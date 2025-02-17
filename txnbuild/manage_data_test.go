@@ -133,7 +133,7 @@ func TestManageDataRoundtrip(t *testing.T) {
 		Name:          "foo",
 		Value:         []byte("bar"),
 	}
-	testOperationsMarshallingRoundtrip(t, []Operation{&manageData}, false)
+	testOperationsMarshalingRoundtrip(t, []Operation{&manageData}, false)
 
 	// with muxed accounts
 	manageData = ManageData{
@@ -141,5 +141,5 @@ func TestManageDataRoundtrip(t *testing.T) {
 		Name:          "foo",
 		Value:         []byte("bar"),
 	}
-	testOperationsMarshallingRoundtrip(t, []Operation{&manageData}, true)
+	testOperationsMarshalingRoundtrip(t, []Operation{&manageData}, true)
 }

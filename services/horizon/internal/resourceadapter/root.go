@@ -46,7 +46,7 @@ func PopulateRoot(
 	dest.Links.AccountTransactions = lb.PagedLink("/accounts/{account_id}/transactions")
 	dest.Links.Assets = lb.Link("/assets{?asset_code,asset_issuer,cursor,limit,order}")
 	dest.Links.Effects = lb.Link("/effects{?cursor,limit,order}")
-	dest.Links.Ledger = lb.Link("/ledger/{sequence}")
+	dest.Links.Ledger = lb.Link("/ledgers/{sequence}")
 	dest.Links.Ledgers = lb.Link("/ledgers{?cursor,limit,order}")
 	dest.Links.FeeStats = lb.Link("/fee_stats")
 	dest.Links.Operation = lb.Link("/operations/{id}")

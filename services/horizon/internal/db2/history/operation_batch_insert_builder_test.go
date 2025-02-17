@@ -16,9 +16,11 @@ func TestAddOperation(t *testing.T) {
 	test.ResetHorizonDB(t, tt.HorizonDB)
 	q := &Q{tt.HorizonSession()}
 
-	txBatch := q.NewTransactionBatchInsertBuilder(0)
+	tt.Assert.NoError(q.Begin(tt.Ctx))
 
-	builder := q.NewOperationBatchInsertBuilder(1)
+	txBatch := q.NewTransactionBatchInsertBuilder()
+
+	builder := q.NewOperationBatchInsertBuilder()
 
 	transactionHash := "2a805712c6d10f9e74bb0ccf54ae92a2b4b1e586451fe8133a2433816f6b567c"
 	transactionResult := "AAAAAAAAAGQAAAAAAAAAAQAAAAAAAAABAAAAAAAAAAA="
@@ -35,8 +37,8 @@ func TestAddOperation(t *testing.T) {
 	)
 
 	sequence := int32(56)
-	tt.Assert.NoError(txBatch.Add(tt.Ctx, transaction, uint32(sequence)))
-	tt.Assert.NoError(txBatch.Exec(tt.Ctx))
+	tt.Assert.NoError(txBatch.Add(transaction, uint32(sequence)))
+	tt.Assert.NoError(txBatch.Exec(tt.Ctx, q))
 
 	details, err := json.Marshal(map[string]string{
 		"to":         "GANFZDRBCNTUXIODCJEYMACPMCSZEVE4WZGZ3CZDZ3P2SXK4KH75IK6Y",
@@ -48,7 +50,7 @@ func TestAddOperation(t *testing.T) {
 
 	sourceAccount := "GAQAA5L65LSYH7CQ3VTJ7F3HHLGCL3DSLAR2Y47263D56MNNGHSQSTVY"
 	sourceAccountMuxed := "MAQAA5L65LSYH7CQ3VTJ7F3HHLGCL3DSLAR2Y47263D56MNNGHSQSAAAAAAAAAAE2LP26"
-	err = builder.Add(tt.Ctx,
+	err = builder.Add(
 		toid.New(sequence, 1, 1).ToInt64(),
 		toid.New(sequence, 1, 0).ToInt64(),
 		1,
@@ -56,11 +58,13 @@ func TestAddOperation(t *testing.T) {
 		details,
 		sourceAccount,
 		null.StringFrom(sourceAccountMuxed),
+		true,
 	)
 	tt.Assert.NoError(err)
 
-	err = builder.Exec(tt.Ctx)
+	err = builder.Exec(tt.Ctx, q)
 	tt.Assert.NoError(err)
+	tt.Assert.NoError(q.Commit())
 
 	ops := []Operation{}
 	err = q.Select(tt.Ctx, &ops, selectOperation)

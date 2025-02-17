@@ -42,23 +42,23 @@ func TestMuxedOperations(t *testing.T) {
 		},
 		&txnbuild.ChangeTrust{
 			SourceAccount: sponsoredMuxed.Address(),
-			Line:          txnbuild.CreditAsset{"ABCD", master.Address()}.MustToChangeTrustAsset(),
+			Line:          txnbuild.CreditAsset{Code: "ABCD", Issuer: master.Address()}.MustToChangeTrustAsset(),
 			Limit:         txnbuild.MaxTrustlineLimit,
 		},
 		&txnbuild.ManageSellOffer{
 			SourceAccount: sponsoredMuxed.Address(),
 			Selling:       txnbuild.NativeAsset{},
-			Buying:        txnbuild.CreditAsset{"ABCD", master.Address()},
+			Buying:        txnbuild.CreditAsset{Code: "ABCD", Issuer: master.Address()},
 			Amount:        "3",
-			Price:         xdr.Price{1, 1},
+			Price:         xdr.Price{N: 1, D: 1},
 		},
 		// This will generate a trade effect:
 		&txnbuild.ManageSellOffer{
 			SourceAccount: masterMuxed.Address(),
-			Selling:       txnbuild.CreditAsset{"ABCD", master.Address()},
+			Selling:       txnbuild.CreditAsset{Code: "ABCD", Issuer: master.Address()},
 			Buying:        txnbuild.NativeAsset{},
 			Amount:        "3",
-			Price:         xdr.Price{1, 1},
+			Price:         xdr.Price{N: 1, D: 1},
 		},
 		&txnbuild.ManageData{
 			SourceAccount: sponsoredMuxed.Address(),
@@ -93,11 +93,11 @@ func TestMuxedOperations(t *testing.T) {
 			SourceAccount: sponsoredMuxed.Address(),
 			Destination:   master.Address(),
 			Amount:        "3",
-			Asset:         txnbuild.CreditAsset{"ABCD", master.Address()},
+			Asset:         txnbuild.CreditAsset{Code: "ABCD", Issuer: master.Address()},
 		},
 		&txnbuild.ChangeTrust{
 			SourceAccount: sponsoredMuxed.Address(),
-			Line:          txnbuild.CreditAsset{"ABCD", master.Address()}.MustToChangeTrustAsset(),
+			Line:          txnbuild.CreditAsset{Code: "ABCD", Issuer: master.Address()}.MustToChangeTrustAsset(),
 			Limit:         "0",
 		},
 		&txnbuild.ManageData{

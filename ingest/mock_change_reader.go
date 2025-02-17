@@ -2,6 +2,8 @@ package ingest
 
 import (
 	"github.com/stretchr/testify/mock"
+
+	"github.com/stellar/go/xdr"
 )
 
 var _ ChangeReader = (*MockChangeReader)(nil)
@@ -17,5 +19,10 @@ func (m *MockChangeReader) Read() (Change, error) {
 
 func (m *MockChangeReader) Close() error {
 	args := m.Called()
+	return args.Error(0)
+}
+
+func (m *MockChangeReader) VerifyBucketList(expectedHash xdr.Hash) error {
+	args := m.Called(expectedHash)
 	return args.Error(0)
 }

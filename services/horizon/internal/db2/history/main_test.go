@@ -4,9 +4,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stellar/go/services/horizon/internal/test"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+
+	"github.com/stellar/go/services/horizon/internal/test"
 )
 
 func TestLatestLedger(t *testing.T) {
@@ -69,44 +69,34 @@ func TestElderLedger(t *testing.T) {
 	}
 }
 
-func TestConstructReapLookupTablesQuery(t *testing.T) {
-	query, err := constructReapLookupTablesQuery(
+func TestConstructDeleteLookupTableRowsQuery(t *testing.T) {
+	query := constructDeleteLookupTableRowsQuery(
 		"history_accounts",
-		[]tableObjectFieldPair{
-			{
-				name:        "history_effects",
-				objectField: "history_account_id",
-			},
-			{
-				name:        "history_operation_participants",
-				objectField: "history_account_id",
-			},
-			{
-				name:        "history_trades",
-				objectField: "base_account_id",
-			},
-			{
-				name:        "history_trades",
-				objectField: "counter_account_id",
-			},
-			{
-				name:        "history_transaction_participants",
-				objectField: "history_account_id",
-			},
-		},
+		[]int64{100, 20, 30},
+	)
+
+	assert.Equal(t,
+		"WITH ha_batch AS (SELECT id FROM history_accounts WHERE id IN (100, 20, 30) ORDER BY id asc FOR UPDATE) "+
+			"DELETE FROM history_accounts WHERE id IN (SELECT e1.id as id FROM ha_batch e1 "+
+			"WHERE NOT EXISTS ( SELECT 1 as row FROM history_transaction_participants WHERE history_transaction_participants.history_account_id = id LIMIT 1) "+
+			"AND NOT EXISTS ( SELECT 1 as row FROM history_effects WHERE history_effects.history_account_id = id LIMIT 1) "+
+			"AND NOT EXISTS ( SELECT 1 as row FROM history_operation_participants WHERE history_operation_participants.history_account_id = id LIMIT 1) "+
+			"AND NOT EXISTS ( SELECT 1 as row FROM history_trades WHERE history_trades.base_account_id = id LIMIT 1) "+
+			"AND NOT EXISTS ( SELECT 1 as row FROM history_trades WHERE history_trades.counter_account_id = id LIMIT 1))", query)
+}
+
+func TestConstructReapLookupTablesQuery(t *testing.T) {
+	query := constructFindReapLookupTablesQuery(
+		"history_accounts",
 		10,
 		0,
 	)
 
-	require.NoError(t, err)
 	assert.Equal(t,
-		"delete from history_accounts where id IN "+
-			"(select id from "+
-			"(select id, (select 1 from history_effects where history_account_id = hcb.id limit 1) as c0, "+
-			"(select 1 from history_operation_participants where history_account_id = hcb.id limit 1) as c1, "+
-			"(select 1 from history_trades where base_account_id = hcb.id limit 1) as c2, "+
-			"(select 1 from history_trades where counter_account_id = hcb.id limit 1) as c3, "+
-			"(select 1 from history_transaction_participants where history_account_id = hcb.id limit 1) as c4, "+
-			"1 as cx from history_accounts hcb where id >= 0 order by id limit 10) as sub "+
-			"where c0 IS NULL and c1 IS NULL and c2 IS NULL and c3 IS NULL and c4 IS NULL and 1=1);", query)
+		"WITH ha_batch AS (SELECT id FROM history_accounts WHERE id >= 0 ORDER BY id ASC limit 10) SELECT e1.id as id FROM ha_batch e1 "+
+			"WHERE NOT EXISTS ( SELECT 1 as row FROM history_transaction_participants WHERE history_transaction_participants.history_account_id = id LIMIT 1) "+
+			"AND NOT EXISTS ( SELECT 1 as row FROM history_effects WHERE history_effects.history_account_id = id LIMIT 1) "+
+			"AND NOT EXISTS ( SELECT 1 as row FROM history_operation_participants WHERE history_operation_participants.history_account_id = id LIMIT 1) "+
+			"AND NOT EXISTS ( SELECT 1 as row FROM history_trades WHERE history_trades.base_account_id = id LIMIT 1) "+
+			"AND NOT EXISTS ( SELECT 1 as row FROM history_trades WHERE history_trades.counter_account_id = id LIMIT 1)", query)
 }

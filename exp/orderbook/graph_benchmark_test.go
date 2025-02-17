@@ -268,7 +268,7 @@ func BenchmarkLiquidityPoolExpectations(b *testing.B) {
 
 func createRandomAmounts(quantity int) []xdr.Int64 {
 	amounts := make([]xdr.Int64, quantity)
-	for i, _ := range amounts {
+	for i := range amounts {
 		amounts[i] = xdr.Int64(1 + rand.Int63n(math.MaxInt64-100))
 	}
 	return amounts

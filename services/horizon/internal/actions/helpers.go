@@ -3,6 +3,7 @@ package actions
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -20,7 +21,7 @@ import (
 	"github.com/stellar/go/services/horizon/internal/db2"
 	"github.com/stellar/go/services/horizon/internal/ledger"
 	hProblem "github.com/stellar/go/services/horizon/internal/render/problem"
-	"github.com/stellar/go/support/errors"
+	"github.com/stellar/go/support/ordered"
 	"github.com/stellar/go/support/render/problem"
 	"github.com/stellar/go/toid"
 	"github.com/stellar/go/xdr"
@@ -168,7 +169,7 @@ func getLimit(r *http.Request, name string, def uint64, max uint64) (uint64, err
 	if asI64 <= 0 {
 		err = errors.New("invalid limit: non-positive value provided")
 	} else if asI64 > int64(max) {
-		err = errors.Errorf("invalid limit: value provided that is over limit max of %d", max)
+		err = fmt.Errorf("invalid limit: value provided that is over limit max of %d", max)
 	}
 
 	if err != nil {
@@ -539,19 +540,37 @@ func validateAssetParams(aType, code, issuer, prefix string) error {
 	return nil
 }
 
-// validateCursorWithinHistory compares the requested page of data against the
+// validateAndAdjustCursor compares the requested page of data against the
 // ledger state of the history database.  In the event that the cursor is
 // guaranteed to return no results, we return a 410 GONE http response.
-func validateCursorWithinHistory(ledgerState *ledger.State, pq db2.PageQuery) error {
-	// an ascending query should never return a gone response:  An ascending query
-	// prior to known history should return results at the beginning of history,
-	// and an ascending query beyond the end of history should not error out but
-	// rather return an empty page (allowing code that tracks the procession of
-	// some resource more easily).
-	if pq.Order != "desc" {
-		return nil
-	}
+// For ascending queries, we adjust the cursor to ensure it starts at
+// the oldest available ledger.
+func validateAndAdjustCursor(ledgerState *ledger.State, pq *db2.PageQuery) error {
+	err := validateCursorWithinHistory(ledgerState, *pq)
 
+	if pq.Order == db2.OrderAscending {
+		// an ascending query should never return a gone response:  An ascending query
+		// prior to known history should return results at the beginning of history,
+		// and an ascending query beyond the end of history should not error out but
+		// rather return an empty page (allowing code that tracks the procession of
+		// some resource more easily).
+
+		// set/modify the cursor for ascending queries to start at the oldest available ledger if it
+		// precedes the oldest ledger. This avoids inefficient queries caused by index bloat from deleted rows
+		// that are removed as part of reaping to maintain the retention window.
+		if pq.Cursor == "" || errors.Is(err, &hProblem.BeforeHistory) {
+			pq.Cursor = toid.AfterLedger(
+				ordered.Max(0, ledgerState.CurrentStatus().HistoryElder-1),
+			).String()
+			return nil
+		}
+	}
+	return err
+}
+
+// validateCursorWithinHistory checks if the cursor is within the known history range.
+// If the cursor is before the oldest available ledger, it returns BeforeHistory error.
+func validateCursorWithinHistory(ledgerState *ledger.State, pq db2.PageQuery) error {
 	var cursor int64
 	var err error
 
@@ -582,7 +601,7 @@ func countNonEmpty(params ...interface{}) (int, error) {
 	for _, param := range params {
 		switch param := param.(type) {
 		default:
-			return 0, errors.Errorf("unexpected type %T", param)
+			return 0, fmt.Errorf("unexpected type %T", param)
 		case int32:
 			if param != 0 {
 				count++

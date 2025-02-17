@@ -81,7 +81,7 @@ func (handler AssetStatsHandler) validateAssetParams(code, issuer string, pq db2
 func (handler AssetStatsHandler) findIssuersForAssets(
 	ctx context.Context,
 	historyQ *history.Q,
-	assetStats []history.ExpAssetStat,
+	assetStats []history.AssetAndContractStat,
 ) (map[string]history.AccountEntry, error) {
 	issuerSet := map[string]bool{}
 	issuers := []string{}

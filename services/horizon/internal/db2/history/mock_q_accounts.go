@@ -25,3 +25,8 @@ func (m *MockQAccounts) RemoveAccounts(ctx context.Context, accountIDs []string)
 	a := m.Called(ctx, accountIDs)
 	return a.Get(0).(int64), a.Error(1)
 }
+
+func (m *MockQAccounts) NewAccountsBatchInsertBuilder() AccountsBatchInsertBuilder {
+	a := m.Called()
+	return a.Get(0).(AccountsBatchInsertBuilder)
+}

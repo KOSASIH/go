@@ -213,3 +213,13 @@ func assetFromXDR(xAsset xdr.Asset) (Asset, error) {
 
 	return nil, errors.New("invalid asset")
 }
+
+// MustAssetFromXDR constructs an Asset from its xdr representation.
+// If the given asset xdr is invalid, MustAssetFromXDR will panic.
+func MustAssetFromXDR(xAsset xdr.Asset) Asset {
+	asset, err := assetFromXDR(xAsset)
+	if err != nil {
+		panic(err)
+	}
+	return asset
+}

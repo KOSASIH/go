@@ -10,6 +10,7 @@ import (
 
 	sq "github.com/Masterminds/squirrel"
 	"github.com/guregu/null"
+
 	"github.com/stellar/go/services/horizon/internal/db2"
 	"github.com/stellar/go/support/errors"
 	"github.com/stellar/go/xdr"
@@ -47,7 +48,7 @@ func (cbq ClaimableBalancesQuery) Cursor() (int64, string, error) {
 		}
 		r = parts[1]
 		if l < 0 {
-			return l, r, errors.Wrap(err, "Invalid cursor - first value should be higher than 0")
+			return l, r, errors.New("invalid cursor - first value should be higher than 0")
 		}
 	}
 
@@ -57,7 +58,7 @@ func (cbq ClaimableBalancesQuery) Cursor() (int64, string, error) {
 // ApplyCursor applies cursor to the given sql. For performance reason the limit
 // is not applied here. This allows us to hint the planner later to use the right
 // indexes.
-func applyClaimableBalancesQueriesCursor(sql sq.SelectBuilder, lCursor int64, rCursor string, order string) (sq.SelectBuilder, error) {
+func applyClaimableBalancesQueriesCursor(sql sq.SelectBuilder, tableName string, lCursor int64, rCursor string, order string) (sq.SelectBuilder, error) {
 	hasPagedLimit := false
 	if lCursor > 0 && rCursor != "" {
 		hasPagedLimit = true
@@ -67,17 +68,26 @@ func applyClaimableBalancesQueriesCursor(sql sq.SelectBuilder, lCursor int64, rC
 	case db2.OrderAscending:
 		if hasPagedLimit {
 			sql = sql.
-				Where(sq.Expr("(last_modified_ledger, id) > (?, ?)", lCursor, rCursor))
-
+				Where(
+					sq.Expr(
+						fmt.Sprintf("(%s.last_modified_ledger, %s.id) > (?, ?)", tableName, tableName),
+						lCursor, rCursor,
+					),
+				)
 		}
-		sql = sql.OrderBy("last_modified_ledger asc, id asc")
+		sql = sql.OrderBy(fmt.Sprintf("%s.last_modified_ledger asc, %s.id asc", tableName, tableName))
 	case db2.OrderDescending:
 		if hasPagedLimit {
 			sql = sql.
-				Where(sq.Expr("(last_modified_ledger, id) < (?, ?)", lCursor, rCursor))
+				Where(
+					sq.Expr(
+						fmt.Sprintf("(%s.last_modified_ledger, %s.id) < (?, ?)", tableName, tableName),
+						lCursor,
+						rCursor,
+					),
+				)
 		}
-
-		sql = sql.OrderBy("last_modified_ledger desc, id desc")
+		sql = sql.OrderBy(fmt.Sprintf("%s.last_modified_ledger desc, %s.id desc", tableName, tableName))
 	default:
 		return sql, errors.Errorf("invalid order: %s", order)
 	}
@@ -107,7 +117,11 @@ type ClaimableBalance struct {
 type Claimants []Claimant
 
 func (c Claimants) Value() (driver.Value, error) {
-	return json.Marshal(c)
+	// Convert the byte array into a string as a workaround to bypass buggy encoding in the pq driver
+	// (More info about this bug here https://github.com/stellar/go/issues/5086#issuecomment-1773215436).
+	// By doing so, the data will be written as a string rather than hex encoded bytes.
+	val, err := json.Marshal(c)
+	return string(val), err
 }
 
 func (c *Claimants) Scan(value interface{}) error {
@@ -131,7 +145,8 @@ type QClaimableBalances interface {
 	RemoveClaimableBalanceClaimants(ctx context.Context, ids []string) (int64, error)
 	GetClaimableBalancesByID(ctx context.Context, ids []string) ([]ClaimableBalance, error)
 	CountClaimableBalances(ctx context.Context) (int, error)
-	NewClaimableBalanceClaimantBatchInsertBuilder(maxBatchSize int) ClaimableBalanceClaimantBatchInsertBuilder
+	NewClaimableBalanceClaimantBatchInsertBuilder() ClaimableBalanceClaimantBatchInsertBuilder
+	NewClaimableBalanceBatchInsertBuilder() ClaimableBalanceBatchInsertBuilder
 	GetClaimantsByClaimableBalances(ctx context.Context, ids []string) (map[string][]ClaimableBalanceClaimant, error)
 }
 
@@ -172,10 +187,40 @@ func (q *Q) GetClaimantsByClaimableBalances(ctx context.Context, ids []string) (
 }
 
 // UpsertClaimableBalances upserts a batch of claimable balances in the claimable_balances table.
-// There's currently no limit of the number of offers this method can
-// accept other than 2GB limit of the query string length what should be enough
-// for each ledger with the current limits.
+// It also upserts the corresponding claimants in the claimable_balance_claimants table.
 func (q *Q) UpsertClaimableBalances(ctx context.Context, cbs []ClaimableBalance) error {
+	if err := q.upsertCBs(ctx, cbs); err != nil {
+		return errors.Wrap(err, "could not upsert claimable balances")
+	}
+
+	if err := q.upsertCBClaimants(ctx, cbs); err != nil {
+		return errors.Wrap(err, "could not upsert claimable balance claimants")
+	}
+
+	return nil
+}
+
+func (q *Q) upsertCBClaimants(ctx context.Context, cbs []ClaimableBalance) error {
+	var id, lastModifiedLedger, destination []interface{}
+
+	for _, cb := range cbs {
+		for _, claimant := range cb.Claimants {
+			id = append(id, cb.BalanceID)
+			lastModifiedLedger = append(lastModifiedLedger, cb.LastModifiedLedger)
+			destination = append(destination, claimant.Destination)
+		}
+	}
+
+	upsertFields := []upsertField{
+		{"id", "text", id},
+		{"destination", "text", destination},
+		{"last_modified_ledger", "integer", lastModifiedLedger},
+	}
+
+	return q.upsertRows(ctx, "claimable_balance_claimants", "id, destination", upsertFields)
+}
+
+func (q *Q) upsertCBs(ctx context.Context, cbs []ClaimableBalance) error {
 	var id, claimants, asset, amount, sponsor, lastModifiedLedger, flags []interface{}
 
 	for _, cb := range cbs {
@@ -242,27 +287,36 @@ func (q *Q) GetClaimableBalances(ctx context.Context, query ClaimableBalancesQue
 		return nil, errors.Wrap(err, "error getting cursor")
 	}
 
-	sql, err := applyClaimableBalancesQueriesCursor(selectClaimableBalances, l, r, query.PageQuery.Order)
+	sql, err := applyClaimableBalancesQueriesCursor(selectClaimableBalances, "cb", l, r, query.PageQuery.Order)
 	if err != nil {
 		return nil, errors.Wrap(err, "could not apply query to page")
 	}
 
-	if query.Asset != nil {
-		// when search by asset, profiling has shown best performance to have the LIMIT on inner query
-		sql = sql.Where("cb.asset = ?", query.Asset)
-	}
+	if query.Asset != nil || query.Sponsor != nil {
 
-	if query.Sponsor != nil {
-		sql = sql.Where("cb.sponsor = ?", query.Sponsor.Address())
-	}
+		// JOIN with claimable_balance_claimants table to query by claimants
+		if query.Claimant != nil {
+			sql = sql.Join("claimable_balance_claimants on claimable_balance_claimants.id = cb.id")
+			sql = sql.Where("claimable_balance_claimants.destination = ?", query.Claimant.Address())
+		}
 
-	if query.Claimant != nil {
-		var selectClaimableBalanceClaimants = sq.Select("id").From("claimable_balance_claimants").
-			Where("destination = ?", query.Claimant.Address()).
-			// Given that each destination can be a claimant for each balance maximum once
-			// we can LIMIT the subquery.
-			Limit(query.PageQuery.Limit)
-		subSql, err := applyClaimableBalancesQueriesCursor(selectClaimableBalanceClaimants, l, r, query.PageQuery.Order)
+		// Apply filters for asset and sponsor
+		if query.Asset != nil {
+			sql = sql.Where("cb.asset = ?", query.Asset)
+		}
+		if query.Sponsor != nil {
+			sql = sql.Where("cb.sponsor = ?", query.Sponsor.Address())
+		}
+
+	} else if query.Claimant != nil {
+		// If only the claimant is provided without additional filters, a JOIN with claimable_balance_claimants
+		// does not perform efficiently. Instead, use a subquery (with LIMIT) to retrieve claimable balances based on
+		// the claimant's address.
+
+		var selectClaimableBalanceClaimants = sq.Select("claimable_balance_claimants.id").From("claimable_balance_claimants").
+			Where("claimable_balance_claimants.destination = ?", query.Claimant.Address()).Limit(query.PageQuery.Limit)
+
+		subSql, err := applyClaimableBalancesQueriesCursor(selectClaimableBalanceClaimants, "claimable_balance_claimants", l, r, query.PageQuery.Order)
 		if err != nil {
 			return nil, errors.Wrap(err, "could not apply subquery to page")
 		}

@@ -167,7 +167,7 @@ func TestPathPaymentStrictSendRoundtrip(t *testing.T) {
 		DestMin:       "1.0000000",
 		Path:          []Asset{CreditAsset{"ABCD", "GB7BDSZU2Y27LYNLALKKALB52WS2IZWYBDGY6EQBLEED3TJOCVMZRH7H"}},
 	}
-	testOperationsMarshallingRoundtrip(t, []Operation{&pathPaymentStrictSend}, false)
+	testOperationsMarshalingRoundtrip(t, []Operation{&pathPaymentStrictSend}, false)
 
 	// with muxed accounts
 	pathPaymentStrictSend = PathPaymentStrictSend{
@@ -179,5 +179,5 @@ func TestPathPaymentStrictSendRoundtrip(t *testing.T) {
 		DestMin:       "1.0000000",
 		Path:          []Asset{CreditAsset{"ABCD", "GB7BDSZU2Y27LYNLALKKALB52WS2IZWYBDGY6EQBLEED3TJOCVMZRH7H"}},
 	}
-	testOperationsMarshallingRoundtrip(t, []Operation{&pathPaymentStrictSend}, true)
+	testOperationsMarshalingRoundtrip(t, []Operation{&pathPaymentStrictSend}, true)
 }

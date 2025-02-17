@@ -1,8 +1,10 @@
 package history
 
 import (
-	"github.com/stellar/go/xdr"
 	"testing"
+
+	"github.com/stellar/go/toid"
+	"github.com/stellar/go/xdr"
 
 	"github.com/stellar/go/services/horizon/internal/db2"
 	"github.com/stellar/go/services/horizon/internal/test"
@@ -45,16 +47,18 @@ func TestSelectTrades(t *testing.T) {
 	test.ResetHorizonDB(t, tt.HorizonDB)
 	q := &Q{tt.HorizonSession()}
 	fixtures := TradeScenario(tt, q)
+	afterTradesSeq := toid.Parse(fixtures.Trades[0].HistoryOperationID).LedgerSequence + 1
+	beforeTradesSeq := afterTradesSeq - 2
 
 	for _, account := range append([]string{allAccounts}, fixtures.Addresses...) {
 		for _, tradeType := range []string{AllTrades, OrderbookTrades, LiquidityPoolTrades} {
 			expected := filterByAccount(FilterTradesByType(fixtures.Trades, tradeType), account)
-			rows, err := q.GetTrades(tt.Ctx, ascPQ, account, tradeType)
+			rows, err := q.GetTrades(tt.Ctx, ascPQ, 0, account, tradeType)
 			tt.Assert.NoError(err)
 
 			assertTradesAreEqual(tt, expected, rows)
 
-			rows, err = q.GetTrades(tt.Ctx, descPQ, account, tradeType)
+			rows, err = q.GetTrades(tt.Ctx, descPQ, beforeTradesSeq, account, tradeType)
 			tt.Assert.NoError(err)
 			start, end := 0, len(rows)-1
 			for start < end {
@@ -64,6 +68,10 @@ func TestSelectTrades(t *testing.T) {
 			}
 
 			assertTradesAreEqual(tt, expected, rows)
+
+			rows, err = q.GetTrades(tt.Ctx, descPQ, afterTradesSeq, account, tradeType)
+			tt.Assert.NoError(err)
+			tt.Assert.Empty(rows)
 		}
 	}
 }
@@ -85,6 +93,7 @@ func TestSelectTradesCursor(t *testing.T) {
 			rows, err := q.GetTrades(
 				tt.Ctx,
 				db2.MustPageQuery(expected[0].PagingToken(), false, "asc", 100),
+				0,
 				account,
 				tradeType,
 			)
@@ -98,6 +107,7 @@ func TestSelectTradesCursor(t *testing.T) {
 			rows, err = q.GetTrades(
 				tt.Ctx,
 				db2.MustPageQuery(expected[1].PagingToken(), false, "asc", 100),
+				0,
 				account,
 				tradeType,
 			)
@@ -116,13 +126,14 @@ func TestTradesQueryForOffer(t *testing.T) {
 	tt.Assert.NotEmpty(fixtures.TradesByOffer)
 
 	for offer, expected := range fixtures.TradesByOffer {
-		trades, err := q.GetTradesForOffer(tt.Ctx, ascPQ, offer)
+		trades, err := q.GetTradesForOffer(tt.Ctx, ascPQ, 0, offer)
 		tt.Assert.NoError(err)
 		assertTradesAreEqual(tt, expected, trades)
 
 		trades, err = q.GetTradesForOffer(
 			tt.Ctx,
 			db2.MustPageQuery(expected[0].PagingToken(), false, "asc", 100),
+			0,
 			offer,
 		)
 		tt.Assert.NoError(err)
@@ -139,13 +150,14 @@ func TestTradesQueryForLiquidityPool(t *testing.T) {
 	tt.Assert.NotEmpty(fixtures.TradesByOffer)
 
 	for poolID, expected := range fixtures.TradesByPool {
-		trades, err := q.GetTradesForLiquidityPool(tt.Ctx, ascPQ, poolID)
+		trades, err := q.GetTradesForLiquidityPool(tt.Ctx, ascPQ, 0, poolID)
 		tt.Assert.NoError(err)
 		assertTradesAreEqual(tt, expected, trades)
 
 		trades, err = q.GetTradesForLiquidityPool(
 			tt.Ctx,
 			db2.MustPageQuery(expected[0].PagingToken(), false, "asc", 100),
+			0,
 			poolID,
 		)
 		tt.Assert.NoError(err)
@@ -167,7 +179,7 @@ func TestTradesForAssetPair(t *testing.T) {
 		for _, tradeType := range []string{AllTrades, OrderbookTrades, LiquidityPoolTrades} {
 			expected := filterByAccount(FilterTradesByType(allTrades, tradeType), account)
 
-			trades, err := q.GetTradesForAssets(tt.Ctx, ascPQ, account, tradeType, chfAsset, eurAsset)
+			trades, err := q.GetTradesForAssets(tt.Ctx, ascPQ, 0, account, tradeType, chfAsset, eurAsset)
 			tt.Assert.NoError(err)
 			assertTradesAreEqual(tt, expected, trades)
 
@@ -178,6 +190,7 @@ func TestTradesForAssetPair(t *testing.T) {
 			trades, err = q.GetTradesForAssets(
 				tt.Ctx,
 				db2.MustPageQuery(expected[0].PagingToken(), false, "asc", 100),
+				0,
 				account,
 				tradeType,
 				chfAsset,
@@ -219,7 +232,7 @@ func TestTradesForReverseAssetPair(t *testing.T) {
 				expected[i] = reverseTrade(expected[i])
 			}
 
-			trades, err := q.GetTradesForAssets(tt.Ctx, ascPQ, account, tradeType, eurAsset, chfAsset)
+			trades, err := q.GetTradesForAssets(tt.Ctx, ascPQ, 0, account, tradeType, eurAsset, chfAsset)
 			tt.Assert.NoError(err)
 			assertTradesAreEqual(tt, expected, trades)
 
@@ -230,6 +243,7 @@ func TestTradesForReverseAssetPair(t *testing.T) {
 			trades, err = q.GetTradesForAssets(
 				tt.Ctx,
 				db2.MustPageQuery(expected[0].PagingToken(), false, "asc", 100),
+				0,
 				account,
 				tradeType,
 				eurAsset,

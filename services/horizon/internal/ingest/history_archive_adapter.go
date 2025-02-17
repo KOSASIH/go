@@ -14,10 +14,15 @@ type historyArchiveAdapter struct {
 	archive historyarchive.ArchiveInterface
 }
 
+type verifiableChangeReader interface {
+	ingest.ChangeReader
+	VerifyBucketList(expectedHash xdr.Hash) error
+}
+
 type historyArchiveAdapterInterface interface {
 	GetLatestLedgerSequence() (uint32, error)
-	BucketListHash(sequence uint32) (xdr.Hash, error)
-	GetState(ctx context.Context, sequence uint32) (ingest.ChangeReader, error)
+	GetState(ctx context.Context, sequence uint32) (verifiableChangeReader, error)
+	GetStats() []historyarchive.ArchiveStats
 }
 
 // newHistoryArchiveAdapter is a constructor to make a historyArchiveAdapter
@@ -35,27 +40,8 @@ func (haa *historyArchiveAdapter) GetLatestLedgerSequence() (uint32, error) {
 	return has.CurrentLedger, nil
 }
 
-// BucketListHash returns the bucket list hash to compare with hash in the
-// ledger header fetched from Stellar-Core.
-func (haa *historyArchiveAdapter) BucketListHash(sequence uint32) (xdr.Hash, error) {
-	exists, err := haa.archive.CategoryCheckpointExists("history", sequence)
-	if err != nil {
-		return xdr.Hash{}, errors.Wrap(err, "error checking if category checkpoint exists")
-	}
-	if !exists {
-		return xdr.Hash{}, errors.Errorf("history checkpoint does not exist for ledger %d", sequence)
-	}
-
-	has, err := haa.archive.GetCheckpointHAS(sequence)
-	if err != nil {
-		return xdr.Hash{}, errors.Wrapf(err, "unable to get checkpoint HAS at ledger sequence %d", sequence)
-	}
-
-	return has.BucketListHash()
-}
-
 // GetState returns a reader with the state of the ledger at the provided sequence number.
-func (haa *historyArchiveAdapter) GetState(ctx context.Context, sequence uint32) (ingest.ChangeReader, error) {
+func (haa *historyArchiveAdapter) GetState(ctx context.Context, sequence uint32) (verifiableChangeReader, error) {
 	exists, err := haa.archive.CategoryCheckpointExists("history", sequence)
 	if err != nil {
 		return nil, errors.Wrap(err, "error checking if category checkpoint exists")
@@ -70,4 +56,8 @@ func (haa *historyArchiveAdapter) GetState(ctx context.Context, sequence uint32)
 	}
 
 	return sr, nil
+}
+
+func (haa *historyArchiveAdapter) GetStats() []historyarchive.ArchiveStats {
+	return haa.archive.GetStats()
 }

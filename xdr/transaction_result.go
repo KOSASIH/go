@@ -30,7 +30,13 @@ func (r TransactionResultPair) OperationResults() ([]OperationResult, bool) {
 // InnerHash returns the hash of the inner transaction.
 // This function can only be called on fee bump transactions.
 func (r TransactionResultPair) InnerHash() Hash {
-	return r.Result.Result.MustInnerResultPair().TransactionHash
+	return r.Result.InnerHash()
+}
+
+// InnerHash returns the hash of the inner transaction.
+// This function can only be called on fee bump transactions.
+func (r TransactionResult) InnerHash() Hash {
+	return r.Result.MustInnerResultPair().TransactionHash
 }
 
 // ExtractBalanceID will parse the operation result at `opIndex` within the

@@ -98,7 +98,7 @@ func TestRevokeSponsorship(t *testing.T) {
 			var op2 RevokeSponsorship
 			assert.NoError(t, op2.FromXDR(xdrOp2))
 			assert.Equal(t, op, op2)
-			testOperationsMarshallingRoundtrip(t, []Operation{&testcase.op}, false)
+			testOperationsMarshalingRoundtrip(t, []Operation{&testcase.op}, false)
 		})
 	}
 
@@ -108,7 +108,7 @@ func TestRevokeSponsorship(t *testing.T) {
 		SponsorshipType: RevokeSponsorshipTypeAccount,
 		Account:         &accountAddress,
 	}
-	testOperationsMarshallingRoundtrip(t, []Operation{&revokeOp}, false)
+	testOperationsMarshalingRoundtrip(t, []Operation{&revokeOp}, false)
 
 	// with muxed accounts
 	revokeOp = RevokeSponsorship{
@@ -116,5 +116,5 @@ func TestRevokeSponsorship(t *testing.T) {
 		SponsorshipType: RevokeSponsorshipTypeAccount,
 		Account:         &accountAddress,
 	}
-	testOperationsMarshallingRoundtrip(t, []Operation{&revokeOp}, true)
+	testOperationsMarshalingRoundtrip(t, []Operation{&revokeOp}, true)
 }

@@ -8,10 +8,12 @@ import (
 	"fmt"
 	"math"
 	"math/big"
+	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/stellar/go/protocols/horizon/base"
+	proto "github.com/stellar/go/protocols/stellarcore"
 	"github.com/stellar/go/strkey"
 	"github.com/stellar/go/support/errors"
 	"github.com/stellar/go/support/render/hal"
@@ -27,6 +29,13 @@ var KeyTypeNames = map[strkey.VersionByte]string{
 	strkey.VersionByteHashTx:        "preauth_tx",
 	strkey.VersionByteHashX:         "sha256_hash",
 	strkey.VersionByteSignedPayload: "ed25519_signed_payload",
+}
+
+var coreStatusToHTTPStatus = map[string]int{
+	proto.TXStatusPending:       http.StatusCreated,
+	proto.TXStatusDuplicate:     http.StatusConflict,
+	proto.TXStatusTryAgainLater: http.StatusServiceUnavailable,
+	proto.TXStatusError:         http.StatusBadRequest,
 }
 
 // Account is the summary of an account
@@ -166,16 +175,21 @@ type AssetStat struct {
 	} `json:"_links"`
 
 	base.Asset
-	PT string `json:"paging_token"`
-	// Action needed in release: horizon-v3.0.0: deprecated field
-	NumAccounts          int32 `json:"num_accounts"`
-	NumClaimableBalances int32 `json:"num_claimable_balances"`
-	NumLiquidityPools    int32 `json:"num_liquidity_pools"`
-	// Action needed in release: horizon-v3.0.0: deprecated field
-	Amount                  string            `json:"amount"`
+	PT                   string `json:"paging_token"`
+	ContractID           string `json:"contract_id,omitempty"`
+	NumClaimableBalances int32  `json:"num_claimable_balances"`
+	NumLiquidityPools    int32  `json:"num_liquidity_pools"`
+	NumContracts         int32  `json:"num_contracts"`
+	// NumArchivedContracts is deprecated and will be removed in the v23 release
+	// Action needed in release: horizon-v23.0.0: remove field
+	NumArchivedContracts    int32             `json:"num_archived_contracts"`
 	Accounts                AssetStatAccounts `json:"accounts"`
 	ClaimableBalancesAmount string            `json:"claimable_balances_amount"`
 	LiquidityPoolsAmount    string            `json:"liquidity_pools_amount"`
+	ContractsAmount         string            `json:"contracts_amount"`
+	// ArchivedContractsAmount is deprecated and will be removed in the v23 release
+	// Action needed in release: horizon-v23.0.0: remove field
+	ArchivedContractsAmount string            `json:"archived_contracts_amount"`
 	Balances                AssetStatBalances `json:"balances"`
 	Flags                   AccountFlags      `json:"flags"`
 }
@@ -495,33 +509,30 @@ type Transaction struct {
 		// When TransactionSuccess is removed from the SDKs we can remove this HAL link
 		Transaction hal.Link `json:"transaction"`
 	} `json:"_links"`
-	ID                string    `json:"id"`
-	PT                string    `json:"paging_token"`
-	Successful        bool      `json:"successful"`
-	Hash              string    `json:"hash"`
-	Ledger            int32     `json:"ledger"`
-	LedgerCloseTime   time.Time `json:"created_at"`
-	Account           string    `json:"source_account"`
-	AccountMuxed      string    `json:"account_muxed,omitempty"`
-	AccountMuxedID    uint64    `json:"account_muxed_id,omitempty,string"`
-	AccountSequence   int64     `json:"source_account_sequence,string"`
-	FeeAccount        string    `json:"fee_account"`
-	FeeAccountMuxed   string    `json:"fee_account_muxed,omitempty"`
-	FeeAccountMuxedID uint64    `json:"fee_account_muxed_id,omitempty,string"`
-	FeeCharged        int64     `json:"fee_charged,string"`
-	MaxFee            int64     `json:"max_fee,string"`
-	OperationCount    int32     `json:"operation_count"`
-	EnvelopeXdr       string    `json:"envelope_xdr"`
-	ResultXdr         string    `json:"result_xdr"`
-	ResultMetaXdr     string    `json:"result_meta_xdr"`
-	FeeMetaXdr        string    `json:"fee_meta_xdr"`
-	MemoType          string    `json:"memo_type"`
-	MemoBytes         string    `json:"memo_bytes,omitempty"`
-	Memo              string    `json:"memo,omitempty"`
-	Signatures        []string  `json:"signatures"`
-	// Action needed in release: horizon-v3.0.0: remove valid_(after|before)
-	ValidAfter         string                    `json:"valid_after,omitempty"`
-	ValidBefore        string                    `json:"valid_before,omitempty"`
+	ID                 string                    `json:"id"`
+	PT                 string                    `json:"paging_token"`
+	Successful         bool                      `json:"successful"`
+	Hash               string                    `json:"hash"`
+	Ledger             int32                     `json:"ledger"`
+	LedgerCloseTime    time.Time                 `json:"created_at"`
+	Account            string                    `json:"source_account"`
+	AccountMuxed       string                    `json:"account_muxed,omitempty"`
+	AccountMuxedID     uint64                    `json:"account_muxed_id,omitempty,string"`
+	AccountSequence    int64                     `json:"source_account_sequence,string"`
+	FeeAccount         string                    `json:"fee_account"`
+	FeeAccountMuxed    string                    `json:"fee_account_muxed,omitempty"`
+	FeeAccountMuxedID  uint64                    `json:"fee_account_muxed_id,omitempty,string"`
+	FeeCharged         int64                     `json:"fee_charged,string"`
+	MaxFee             int64                     `json:"max_fee,string"`
+	OperationCount     int32                     `json:"operation_count"`
+	EnvelopeXdr        string                    `json:"envelope_xdr"`
+	ResultXdr          string                    `json:"result_xdr"`
+	ResultMetaXdr      string                    `json:"result_meta_xdr,omitempty"`
+	FeeMetaXdr         string                    `json:"fee_meta_xdr"`
+	MemoType           string                    `json:"memo_type"`
+	MemoBytes          string                    `json:"memo_bytes,omitempty"`
+	Memo               string                    `json:"memo,omitempty"`
+	Signatures         []string                  `json:"signatures"`
 	Preconditions      *TransactionPreconditions `json:"preconditions,omitempty"`
 	FeeBumpTransaction *FeeBumpTransaction       `json:"fee_bump_transaction,omitempty"`
 	InnerTransaction   *InnerTransaction         `json:"inner_transaction,omitempty"`
@@ -560,6 +571,30 @@ type InnerTransaction struct {
 	Hash       string   `json:"hash"`
 	Signatures []string `json:"signatures"`
 	MaxFee     int64    `json:"max_fee,string"`
+}
+
+// AsyncTransactionSubmissionResponse represents the response returned by Horizon
+// when using the transaction-async endpoint.
+type AsyncTransactionSubmissionResponse struct {
+	// ErrorResultXDR is present only if Status is equal to proto.TXStatusError.
+	// ErrorResultXDR is a TransactionResult xdr string which contains details on why
+	// the transaction could not be accepted by stellar-core.
+	ErrorResultXDR string `json:"error_result_xdr,omitempty"`
+	// DeprecatedErrorResultXDR is a deprecated field equivalent to ErrorResultXDR
+	// which will be removed in the  v23 release. Use ErrorResultXDR instead of
+	// DeprecatedErrorResultXDR
+	DeprecatedErrorResultXDR string `json:"errorResultXdr,omitempty"`
+	// TxStatus represents the status of the transaction submission returned by stellar-core.
+	// It can be one of: proto.TXStatusPending, proto.TXStatusDuplicate,
+	// proto.TXStatusTryAgainLater, or proto.TXStatusError.
+	TxStatus string `json:"tx_status"`
+	// Hash is a hash of the transaction which can be used to look up whether
+	// the transaction was included in the ledger.
+	Hash string `json:"hash"`
+}
+
+func (response AsyncTransactionSubmissionResponse) GetStatus() int {
+	return coreStatusToHTTPStatus[response.TxStatus]
 }
 
 // MarshalJSON implements a custom marshaler for Transaction.

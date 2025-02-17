@@ -4,15 +4,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/guregu/null"
 	"github.com/stellar/go/support/db/dbtest"
 	"github.com/stretchr/testify/assert"
 )
 
 type person struct {
-	Name        string `db:"name"`
-	HungerLevel string `db:"hunger_level"`
-
-	SomethingIgnored int `db:"-"`
+	Name             string      `db:"name"`
+	HungerLevel      string      `db:"hunger_level"`
+	JsonValue        null.String `db:"json_value"`
+	SomethingIgnored int         `db:"-"`
 }
 
 func TestGetTable(t *testing.T) {

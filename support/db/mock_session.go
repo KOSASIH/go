@@ -17,13 +17,13 @@ type MockSession struct {
 	mock.Mock
 }
 
-func (m *MockSession) Begin() error {
-	args := m.Called()
+func (m *MockSession) Begin(ctx context.Context) error {
+	args := m.Called(ctx)
 	return args.Error(0)
 }
 
-func (m *MockSession) BeginTx(opts *sql.TxOptions) error {
-	args := m.Called(opts)
+func (m *MockSession) BeginTx(ctx context.Context, opts *sql.TxOptions) error {
+	args := m.Called(ctx, opts)
 	return args.Error(0)
 }
 
@@ -72,14 +72,14 @@ func (m *MockSession) GetRaw(ctx context.Context, dest interface{}, query string
 	return argss.Error(0)
 }
 
-func (m *MockSession) Query(ctx context.Context, query squirrel.Sqlizer) (*sqlx.Rows, error) {
+func (m *MockSession) Query(ctx context.Context, query squirrel.Sqlizer) (*Rows, error) {
 	args := m.Called(ctx, query)
-	return args.Get(0).(*sqlx.Rows), args.Error(1)
+	return args.Get(0).(*Rows), args.Error(1)
 }
 
-func (m *MockSession) QueryRaw(ctx context.Context, query string, args ...interface{}) (*sqlx.Rows, error) {
+func (m *MockSession) QueryRaw(ctx context.Context, query string, args ...interface{}) (*Rows, error) {
 	argss := m.Called(ctx, query, args)
-	return argss.Get(0).(*sqlx.Rows), argss.Error(1)
+	return argss.Get(0).(*Rows), argss.Error(1)
 }
 
 func (m *MockSession) Select(ctx context.Context, dest interface{}, query squirrel.Sqlizer) error {
@@ -125,6 +125,7 @@ func (m *MockSession) DeleteRange(
 	start, end int64,
 	table string,
 	idCol string,
-) (err error) {
-	return m.Called(ctx, start, end, table, idCol).Error(0)
+) (int64, error) {
+	args := m.Called(ctx, start, end, table, idCol)
+	return args.Get(0).(int64), args.Error(1)
 }

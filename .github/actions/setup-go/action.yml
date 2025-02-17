@@ -32,7 +32,7 @@ runs:
     run: echo 'PREFIX=${{ github.workflow }}-${{ github.job }}-${{ runner.os }}-${{ inputs.go-version }}-matrix(${{ join(matrix.*,'|') }})' >> $GITHUB_ENV
 
   # Cache the Go Modules downloaded during the job.
-  - uses: actions/cache@v2
+  - uses: actions/cache@v4
     with:
       path: ~/go/pkg/mod
       key: ${{ env.PREFIX }}-go-mod-${{ hashFiles('**/go.sum') }}
@@ -40,7 +40,7 @@ runs:
 
   # Cache any build and test artifacts during the job, which will speed up
   # rebuilds and cause test runs to skip tests that have no reason to rerun.
-  - uses: actions/cache@v2
+  - uses: actions/cache@v4
     with:
       path: ~/.cache/go-build
       key: ${{ env.PREFIX }}-go-build-${{ github.ref }}-${{ hashFiles('**', '!.git') }}

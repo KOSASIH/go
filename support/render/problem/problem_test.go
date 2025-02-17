@@ -184,3 +184,9 @@ func TestProblemIsKnownError(t *testing.T) {
 	err = problem.IsKnownError(errors.New("foo"))
 	assert.NoError(t, err)
 }
+
+func TestErrorIncludesPInformation(t *testing.T) {
+	err_str := ServerError.Error()
+	assert.True(t, strings.Contains(err_str, ServerError.Detail))
+	assert.True(t, strings.Contains(err_str, ServerError.Type))
+}

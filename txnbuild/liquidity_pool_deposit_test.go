@@ -1,8 +1,9 @@
 package txnbuild
 
 import (
-	"github.com/stellar/go/price"
 	"testing"
+
+	"github.com/stellar/go/price"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -67,7 +68,7 @@ func TestLiquidityPoolDepositRoundTrip(t *testing.T) {
 		MaxPrice:        price.MustParse("0.4"),
 	}
 
-	testOperationsMarshallingRoundtrip(t, []Operation{lpd}, false)
+	testOperationsMarshalingRoundtrip(t, []Operation{lpd}, false)
 
 	// with muxed accounts
 	lpd = &LiquidityPoolDeposit{
@@ -79,5 +80,5 @@ func TestLiquidityPoolDepositRoundTrip(t *testing.T) {
 		MaxPrice:        price.MustParse("0.4"),
 	}
 
-	testOperationsMarshallingRoundtrip(t, []Operation{lpd}, true)
+	testOperationsMarshalingRoundtrip(t, []Operation{lpd}, true)
 }

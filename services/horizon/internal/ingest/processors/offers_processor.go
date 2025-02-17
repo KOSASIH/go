@@ -17,7 +17,8 @@ type OffersProcessor struct {
 	offersQ  history.QOffers
 	sequence uint32
 
-	cache *ingest.ChangeCompactor
+	batchUpdateOffers  []history.Offer
+	insertBatchBuilder history.OffersBatchInsertBuilder
 }
 
 func NewOffersProcessor(offersQ history.QOffers, sequence uint32) *OffersProcessor {
@@ -26,8 +27,13 @@ func NewOffersProcessor(offersQ history.QOffers, sequence uint32) *OffersProcess
 	return p
 }
 
+func (p *OffersProcessor) Name() string {
+	return "processors.OffersProcessor"
+}
+
 func (p *OffersProcessor) reset() {
-	p.cache = ingest.NewChangeCompactor()
+	p.batchUpdateOffers = []history.Offer{}
+	p.insertBatchBuilder = p.offersQ.NewOffersBatchInsertBuilder()
 }
 
 func (p *OffersProcessor) ProcessChange(ctx context.Context, change ingest.Change) error {
@@ -35,15 +41,31 @@ func (p *OffersProcessor) ProcessChange(ctx context.Context, change ingest.Chang
 		return nil
 	}
 
-	if err := p.cache.AddChange(change); err != nil {
-		return errors.Wrap(err, "error adding to ledgerCache")
+	switch {
+	case change.Pre == nil && change.Post != nil:
+		// Created
+		err := p.insertBatchBuilder.Add(p.ledgerEntryToRow(change.Post))
+		if err != nil {
+			return errors.New("Error adding to OffersBatchInsertBuilder")
+		}
+	case change.Pre != nil && change.Post != nil:
+		// Updated
+		row := p.ledgerEntryToRow(change.Post)
+		p.batchUpdateOffers = append(p.batchUpdateOffers, row)
+	case change.Pre != nil && change.Post == nil:
+		// Removed
+		row := p.ledgerEntryToRow(change.Pre)
+		row.Deleted = true
+		row.LastModifiedLedger = p.sequence
+		p.batchUpdateOffers = append(p.batchUpdateOffers, row)
+	default:
+		return errors.New("Invalid io.Change: change.Pre == nil && change.Post == nil")
 	}
 
-	if p.cache.Size() > maxBatchSize {
+	if p.insertBatchBuilder.Len()+len(p.batchUpdateOffers) > maxBatchSize {
 		if err := p.flushCache(ctx); err != nil {
 			return errors.Wrap(err, "error in Commit")
 		}
-		p.reset()
 	}
 
 	return nil
@@ -67,27 +89,15 @@ func (p *OffersProcessor) ledgerEntryToRow(entry *xdr.LedgerEntry) history.Offer
 }
 
 func (p *OffersProcessor) flushCache(ctx context.Context) error {
-	var batchUpsertOffers []history.Offer
-	changes := p.cache.GetChanges()
-	for _, change := range changes {
-		switch {
-		case change.Post != nil:
-			// Created and updated
-			row := p.ledgerEntryToRow(change.Post)
-			batchUpsertOffers = append(batchUpsertOffers, row)
-		case change.Pre != nil && change.Post == nil:
-			// Removed
-			row := p.ledgerEntryToRow(change.Pre)
-			row.Deleted = true
-			row.LastModifiedLedger = p.sequence
-			batchUpsertOffers = append(batchUpsertOffers, row)
-		default:
-			return errors.New("Invalid io.Change: change.Pre == nil && change.Post == nil")
-		}
+	defer p.reset()
+
+	err := p.insertBatchBuilder.Exec(ctx)
+	if err != nil {
+		return errors.New("Error executing OffersBatchInsertBuilder")
 	}
 
-	if len(batchUpsertOffers) > 0 {
-		err := p.offersQ.UpsertOffers(ctx, batchUpsertOffers)
+	if len(p.batchUpdateOffers) > 0 {
+		err := p.offersQ.UpsertOffers(ctx, p.batchUpdateOffers)
 		if err != nil {
 			return errors.Wrap(err, "errors in UpsertOffers")
 		}

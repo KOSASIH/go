@@ -65,6 +65,7 @@ func (qp OperationsQuery) Validate() error {
 type GetOperationsHandler struct {
 	LedgerState  *ledger.State
 	OnlyPayments bool
+	SkipTxMeta   bool
 }
 
 // GetResourcePage returns a page of operations.
@@ -76,7 +77,7 @@ func (handler GetOperationsHandler) GetResourcePage(w HeaderWriter, r *http.Requ
 		return nil, err
 	}
 
-	err = validateCursorWithinHistory(handler.LedgerState, pq)
+	err = validateAndAdjustCursor(handler.LedgerState, &pq)
 	if err != nil {
 		return nil, err
 	}
@@ -121,17 +122,18 @@ func (handler GetOperationsHandler) GetResourcePage(w HeaderWriter, r *http.Requ
 		query.OnlyPayments()
 	}
 
-	ops, txs, err := query.Page(pq).Fetch(ctx)
+	ops, txs, err := query.Page(pq, handler.LedgerState.CurrentStatus().HistoryElder).Fetch(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	return buildOperationsPage(ctx, historyQ, ops, txs, qp.IncludeTransactions())
+	return buildOperationsPage(ctx, historyQ, ops, txs, qp.IncludeTransactions(), handler.SkipTxMeta)
 }
 
 // GetOperationByIDHandler is the action handler for all end-points returning a list of operations.
 type GetOperationByIDHandler struct {
 	LedgerState *ledger.State
+	SkipTxMeta  bool
 }
 
 // OperationQuery query struct for operation/id end-point
@@ -182,10 +184,11 @@ func (handler GetOperationByIDHandler) GetResource(w HeaderWriter, r *http.Reque
 		op.TransactionHash,
 		tx,
 		ledger,
+		handler.SkipTxMeta,
 	)
 }
 
-func buildOperationsPage(ctx context.Context, historyQ *history.Q, operations []history.Operation, transactions []history.Transaction, includeTransactions bool) ([]hal.Pageable, error) {
+func buildOperationsPage(ctx context.Context, historyQ *history.Q, operations []history.Operation, transactions []history.Transaction, includeTransactions bool, skipTxMeta bool) ([]hal.Pageable, error) {
 	ledgerCache := history.LedgerCache{}
 	for _, record := range operations {
 		ledgerCache.Queue(record.LedgerSequence())
@@ -216,6 +219,7 @@ func buildOperationsPage(ctx context.Context, historyQ *history.Q, operations []
 			operationRecord.TransactionHash,
 			transactionRecord,
 			ledger,
+			skipTxMeta,
 		)
 		if err != nil {
 			return nil, err

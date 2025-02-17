@@ -65,8 +65,8 @@ type authResponse struct {
 }
 
 var forwardHeaders = map[string]struct{}{
-	"authorization": struct{}{},
-	"cookie":        struct{}{},
+	"authorization": {},
+	"cookie":        {},
 }
 
 func authHandler(next http.Handler, authenticator *Authenticator) http.Handler {

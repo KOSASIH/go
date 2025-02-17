@@ -109,7 +109,7 @@ func TestGetNonExistentOfferByID(t *testing.T) {
 }
 
 func streamAllOffersInTx(q *Q, ctx context.Context, f func(offer Offer) error) error {
-	err := q.BeginTx(&sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
+	err := q.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
 	if err != nil {
 		return err
 	}
@@ -128,7 +128,7 @@ func TestStreamAllOffersRequiresTx(t *testing.T) {
 	})
 	assert.EqualError(t, err, "cannot be called outside of a transaction")
 
-	assert.NoError(t, q.Begin())
+	assert.NoError(t, q.Begin(tt.Ctx))
 	defer q.Rollback()
 	err = q.StreamAllOffers(tt.Ctx, func(offer Offer) error {
 		return nil

@@ -3,53 +3,8 @@ package xdr
 import "fmt"
 
 // LedgerKey implements the `Keyer` interface
-func (entry *LedgerEntry) LedgerKey() LedgerKey {
-	var body interface{}
-
-	switch entry.Data.Type {
-	case LedgerEntryTypeAccount:
-		account := entry.Data.MustAccount()
-		body = LedgerKeyAccount{
-			AccountId: account.AccountId,
-		}
-	case LedgerEntryTypeData:
-		data := entry.Data.MustData()
-		body = LedgerKeyData{
-			AccountId: data.AccountId,
-			DataName:  data.DataName,
-		}
-	case LedgerEntryTypeOffer:
-		offer := entry.Data.MustOffer()
-		body = LedgerKeyOffer{
-			SellerId: offer.SellerId,
-			OfferId:  offer.OfferId,
-		}
-	case LedgerEntryTypeTrustline:
-		tline := entry.Data.MustTrustLine()
-		body = LedgerKeyTrustLine{
-			AccountId: tline.AccountId,
-			Asset:     tline.Asset,
-		}
-	case LedgerEntryTypeClaimableBalance:
-		cBalance := entry.Data.MustClaimableBalance()
-		body = LedgerKeyClaimableBalance{
-			BalanceId: cBalance.BalanceId,
-		}
-	case LedgerEntryTypeLiquidityPool:
-		lPool := entry.Data.MustLiquidityPool()
-		body = LedgerKeyLiquidityPool{
-			LiquidityPoolId: lPool.LiquidityPoolId,
-		}
-	default:
-		panic(fmt.Errorf("Unknown entry type: %v", entry.Data.Type))
-	}
-
-	ret, err := NewLedgerKey(entry.Data.Type, body)
-	if err != nil {
-		panic(err)
-	}
-
-	return ret
+func (entry *LedgerEntry) LedgerKey() (LedgerKey, error) {
+	return entry.Data.LedgerKey()
 }
 
 // SponsoringID return SponsorshipDescriptor for a given ledger entry
@@ -157,4 +112,74 @@ func (entry *LedgerEntry) Normalize() *LedgerEntry {
 	}
 
 	return entry
+}
+
+func (data *LedgerEntryData) SetContractData(entry *ContractDataEntry) error {
+	*data = LedgerEntryData{
+		Type:         LedgerEntryTypeContractData,
+		ContractData: entry,
+	}
+	return nil
+}
+
+func (data *LedgerEntryData) SetContractCode(entry *ContractCodeEntry) error {
+	*data = LedgerEntryData{
+		Type:         LedgerEntryTypeContractCode,
+		ContractCode: entry,
+	}
+	return nil
+}
+
+// LedgerKey implements the `Keyer` interface
+func (data *LedgerEntryData) LedgerKey() (LedgerKey, error) {
+	var key LedgerKey
+	switch data.Type {
+	case LedgerEntryTypeAccount:
+		if err := key.SetAccount(data.Account.AccountId); err != nil {
+			return key, err
+		}
+	case LedgerEntryTypeTrustline:
+		if err := key.SetTrustline(data.TrustLine.AccountId, data.TrustLine.Asset); err != nil {
+			return key, err
+		}
+	case LedgerEntryTypeContractData:
+		if err := key.SetContractData(
+			data.ContractData.Contract,
+			data.ContractData.Key,
+			data.ContractData.Durability); err != nil {
+			return key, err
+		}
+	case LedgerEntryTypeContractCode:
+		if err := key.SetContractCode(data.ContractCode.Hash); err != nil {
+			return key, err
+		}
+	case LedgerEntryTypeData:
+		if err := key.SetData(data.Data.AccountId, string(data.Data.DataName)); err != nil {
+			return key, err
+		}
+	case LedgerEntryTypeOffer:
+		if err := key.SetOffer(data.Offer.SellerId, uint64(data.Offer.OfferId)); err != nil {
+			return key, err
+		}
+	case LedgerEntryTypeLiquidityPool:
+		if err := key.SetLiquidityPool(data.LiquidityPool.LiquidityPoolId); err != nil {
+			return key, err
+		}
+	case LedgerEntryTypeClaimableBalance:
+		if err := key.SetClaimableBalance(data.ClaimableBalance.BalanceId); err != nil {
+			return key, err
+		}
+	case LedgerEntryTypeConfigSetting:
+		if err := key.SetConfigSetting(data.ConfigSetting.ConfigSettingId); err != nil {
+			return key, err
+		}
+	case LedgerEntryTypeTtl:
+		if err := key.SetTtl(data.Ttl.KeyHash); err != nil {
+			return key, err
+		}
+	default:
+		return key, fmt.Errorf("unknown ledger entry type %d", data.Type)
+	}
+
+	return key, nil
 }

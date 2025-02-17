@@ -67,6 +67,25 @@ var IsNestedInnerSet Selector = func(name string, xdrType goxdr.XdrType) bool {
 	return false
 }
 
+// IsDeepAuthorizedInvocationTree is a Selector which identifies deep trees of the following xdr type:
+//
+//	struct AuthorizedInvocation
+//	{
+//		Hash contractID;
+//		SCSymbol functionName;
+//		SCVec args;
+//		AuthorizedInvocation subInvocations<>;
+//	};
+//
+// only allows trees of height up to 2
+var IsDeepAuthorizedInvocationTree Selector = func(name string, xdrType goxdr.XdrType) bool {
+	if strings.HasSuffix(name, "subInvocations") && strings.Count(name, ".subInvocations[") > 0 {
+		_, ok := goxdr.XdrBaseType(xdrType).(goxdr.XdrVec)
+		return ok
+	}
+	return false
+}
+
 // SetPtr is a Setter which sets the xdr pointer to null if present is false
 func SetPtr(present bool) Setter {
 	return func(m *randMarshaller, name string, xdrType goxdr.XdrType) {
@@ -86,11 +105,12 @@ func SetVecLen(vecLen uint32) Setter {
 	}
 }
 
-// SetU32 returns a Setter which sets a uint32 XDR field to a fixed value
-func SetU32(val uint32) Setter {
+// SetU32 returns a Setter which sets a uint32 XDR field to a randomly selected
+// element from vals
+func SetU32(vals ...uint32) Setter {
 	return func(x *randMarshaller, field string, xdrType goxdr.XdrType) {
 		f := goxdr.XdrBaseType(xdrType).(goxdr.XdrNum32)
-		f.SetU32(val)
+		f.SetU32(vals[x.rand.Intn(len(vals))])
 	}
 }
 

@@ -39,36 +39,36 @@ type tradesQuery struct {
 }
 
 func (q *Q) GetTrades(
-	ctx context.Context, page db2.PageQuery, account string, tradeType string,
+	ctx context.Context, page db2.PageQuery, oldestLedger int32, account string, tradeType string,
 ) ([]Trade, error) {
-	return q.getTrades(ctx, page, tradesQuery{
+	return q.getTrades(ctx, page, oldestLedger, tradesQuery{
 		account:   account,
 		tradeType: tradeType,
 	})
 }
 
 func (q *Q) GetTradesForOffer(
-	ctx context.Context, page db2.PageQuery, offerID int64,
+	ctx context.Context, page db2.PageQuery, oldestLedger int32, offerID int64,
 ) ([]Trade, error) {
-	return q.getTrades(ctx, page, tradesQuery{
+	return q.getTrades(ctx, page, oldestLedger, tradesQuery{
 		offer:     offerID,
 		tradeType: AllTrades,
 	})
 }
 
 func (q *Q) GetTradesForLiquidityPool(
-	ctx context.Context, page db2.PageQuery, poolID string,
+	ctx context.Context, page db2.PageQuery, oldestLedger int32, poolID string,
 ) ([]Trade, error) {
-	return q.getTrades(ctx, page, tradesQuery{
+	return q.getTrades(ctx, page, oldestLedger, tradesQuery{
 		liquidityPool: poolID,
 		tradeType:     AllTrades,
 	})
 }
 
 func (q *Q) GetTradesForAssets(
-	ctx context.Context, page db2.PageQuery, account, tradeType string, baseAsset, counterAsset xdr.Asset,
+	ctx context.Context, page db2.PageQuery, oldestLedger int32, account, tradeType string, baseAsset, counterAsset xdr.Asset,
 ) ([]Trade, error) {
-	return q.getTrades(ctx, page, tradesQuery{
+	return q.getTrades(ctx, page, oldestLedger, tradesQuery{
 		account:      account,
 		baseAsset:    &baseAsset,
 		counterAsset: &counterAsset,
@@ -86,7 +86,7 @@ type historyTradesQuery struct {
 	tradeType      string
 }
 
-func (q *Q) getTrades(ctx context.Context, page db2.PageQuery, query tradesQuery) ([]Trade, error) {
+func (q *Q) getTrades(ctx context.Context, page db2.PageQuery, oldestLedger int32, query tradesQuery) ([]Trade, error) {
 	// Add explicit query type for prometheus metrics, since we use raw sql.
 	ctx = context.WithValue(ctx, &db.QueryTypeContextKey, db.SelectQueryType)
 
@@ -94,7 +94,7 @@ func (q *Q) getTrades(ctx context.Context, page db2.PageQuery, query tradesQuery
 	if err != nil {
 		return nil, errors.Wrap(err, "invalid trade query")
 	}
-	rawSQL, args, err := createTradesSQL(page, internalTradesQuery)
+	rawSQL, args, err := createTradesSQL(page, oldestLedger, internalTradesQuery)
 	if err != nil {
 		return nil, errors.Wrap(err, "could not create trades sql query")
 	}
@@ -149,7 +149,7 @@ func (q *Q) transformTradesQuery(ctx context.Context, query tradesQuery) (histor
 	return internalQuery, nil
 }
 
-func createTradesSQL(page db2.PageQuery, query historyTradesQuery) (string, []interface{}, error) {
+func createTradesSQL(page db2.PageQuery, oldestLedger int32, query historyTradesQuery) (string, []interface{}, error) {
 	base := selectTradeFields
 	if !query.orderPreserved {
 		base = selectReverseTradeFields
@@ -204,8 +204,8 @@ func createTradesSQL(page db2.PageQuery, query historyTradesQuery) (string, []in
 			secondSelect = sql.Where("htrd.counter_liquidity_pool_id = ?", query.poolID)
 		}
 
-		firstSelect = appendOrdering(firstSelect, op, idx, page.Order)
-		secondSelect = appendOrdering(secondSelect, op, idx, page.Order)
+		firstSelect = appendOrdering(firstSelect, oldestLedger, op, idx, page.Order)
+		secondSelect = appendOrdering(secondSelect, oldestLedger, op, idx, page.Order)
 		firstSQL, firstArgs, err := firstSelect.ToSql()
 		if err != nil {
 			return "", nil, errors.Wrap(err, "error building a firstSelect query")
@@ -229,7 +229,7 @@ func createTradesSQL(page db2.PageQuery, query historyTradesQuery) (string, []in
 		rawSQL = rawSQL + fmt.Sprintf("LIMIT %d", page.Limit)
 		return rawSQL, args, nil
 	} else {
-		sql = appendOrdering(sql, op, idx, page.Order)
+		sql = appendOrdering(sql, oldestLedger, op, idx, page.Order)
 		sql = sql.Limit(page.Limit)
 		rawSQL, args, err := sql.ToSql()
 		if err != nil {
@@ -239,7 +239,7 @@ func createTradesSQL(page db2.PageQuery, query historyTradesQuery) (string, []in
 	}
 }
 
-func appendOrdering(sel sq.SelectBuilder, op, idx int64, order string) sq.SelectBuilder {
+func appendOrdering(sel sq.SelectBuilder, oldestLedger int32, op, idx int64, order string) sq.SelectBuilder {
 	// NOTE: Remember to test the queries below with EXPLAIN / EXPLAIN ANALYZE
 	// before changing them.
 	// This condition is using multicolumn index and it's easy to write it in a way that
@@ -255,6 +255,9 @@ func appendOrdering(sel sq.SelectBuilder, op, idx int64, order string) sq.Select
 			))`, op, op, op, idx).
 			OrderBy("htrd.history_operation_id asc, htrd.order asc")
 	case "desc":
+		if lowerBound := lowestLedgerBound(oldestLedger); lowerBound > 0 {
+			sel = sel.Where("htrd.history_operation_id > ?", lowerBound)
+		}
 		return sel.
 			Where(`(
 				htrd.history_operation_id <= ?
@@ -348,7 +351,7 @@ func getCanonicalAssetOrder(
 
 type QTrades interface {
 	QCreateAccountsHistory
-	NewTradeBatchInsertBuilder(maxBatchSize int) TradeBatchInsertBuilder
+	NewTradeBatchInsertBuilder() TradeBatchInsertBuilder
 	RebuildTradeAggregationBuckets(ctx context.Context, fromledger, toLedger uint32, roundingSlippageFilter int) error
 	CreateAssets(ctx context.Context, assets []xdr.Asset, maxBatchSize int) (map[string]Asset, error)
 	CreateHistoryLiquidityPools(ctx context.Context, poolIDs []string, batchSize int) (map[string]int64, error)

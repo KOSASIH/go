@@ -9,8 +9,18 @@ import (
 
 // This file contains implementations of the sql.Scanner interface for stellar xdr types
 
+// Scan reads from src into a ledgerCloseMeta  struct
+func (l *LedgerCloseMeta) Scan(src any) error {
+	return l.UnmarshalBinary(src.([]byte))
+}
+
+// Value implements the database/sql/driver Valuer interface.
+func (l LedgerCloseMeta) Value() (driver.Value, error) {
+	return l.MarshalBinary()
+}
+
 // Scan reads from src into an AccountFlags
-func (t *AccountFlags) Scan(src interface{}) error {
+func (t *AccountFlags) Scan(src any) error {
 	val, ok := src.(int64)
 	if !ok {
 		return errors.New("Invalid value for xdr.AccountFlags")
@@ -21,7 +31,7 @@ func (t *AccountFlags) Scan(src interface{}) error {
 }
 
 // Scan reads from src into an AssetType
-func (t *AssetType) Scan(src interface{}) error {
+func (t *AssetType) Scan(src any) error {
 	val, ok := src.(int64)
 	if !ok {
 		return errors.New("Invalid value for xdr.AssetType")
@@ -32,7 +42,7 @@ func (t *AssetType) Scan(src interface{}) error {
 }
 
 // Scan reads from src into an Asset
-func (t *Asset) Scan(src interface{}) error {
+func (t *Asset) Scan(src any) error {
 	return safeBase64Scan(src, t)
 }
 
@@ -42,7 +52,7 @@ func (t Asset) Value() (driver.Value, error) {
 }
 
 // Scan reads from src into a ClaimPredicate
-func (c *ClaimPredicate) Scan(src interface{}) error {
+func (c *ClaimPredicate) Scan(src any) error {
 	return safeBase64Scan(src, c)
 }
 
@@ -52,7 +62,7 @@ func (c ClaimPredicate) Value() (driver.Value, error) {
 }
 
 // Scan reads from src into an Int64
-func (t *Int64) Scan(src interface{}) error {
+func (t *Int64) Scan(src any) error {
 	val, ok := src.(int64)
 	if !ok {
 		return errors.New("Invalid value for xdr.Int64")
@@ -63,7 +73,7 @@ func (t *Int64) Scan(src interface{}) error {
 }
 
 // Scan reads from a src into an xdr.Hash
-func (t *Hash) Scan(src interface{}) error {
+func (t *Hash) Scan(src any) error {
 	decodedBytes, err := hex.DecodeString(string(src.([]uint8)))
 	if err != nil {
 		return err
@@ -78,58 +88,58 @@ func (t *Hash) Scan(src interface{}) error {
 }
 
 // Scan reads from src into an LedgerUpgrade struct
-func (t *LedgerUpgrade) Scan(src interface{}) error {
+func (t *LedgerUpgrade) Scan(src any) error {
 	return safeBase64Scan(src, t)
 }
 
 // Scan reads from src into an LedgerEntryChanges struct
-func (t *LedgerEntryChanges) Scan(src interface{}) error {
+func (t *LedgerEntryChanges) Scan(src any) error {
 	return safeBase64Scan(src, t)
 }
 
 // Scan reads from src into an LedgerHeader struct
-func (t *LedgerHeader) Scan(src interface{}) error {
+func (t *LedgerHeader) Scan(src any) error {
 	return safeBase64Scan(src, t)
 }
 
 // Scan reads from src into an ScpEnvelope struct
-func (t *ScpEnvelope) Scan(src interface{}) error {
+func (t *ScpEnvelope) Scan(src any) error {
 	return safeBase64Scan(src, t)
 }
 
 // Scan reads from src into an ScpEnvelope struct
-func (t *ScpQuorumSet) Scan(src interface{}) error {
+func (t *ScpQuorumSet) Scan(src any) error {
 	return safeBase64Scan(src, t)
 }
 
 // Scan reads from src into an Thresholds struct
-func (t *Thresholds) Scan(src interface{}) error {
+func (t *Thresholds) Scan(src any) error {
 	return safeBase64Scan(src, t)
 }
 
 // Scan reads from src into an TransactionEnvelope struct
-func (t *TransactionEnvelope) Scan(src interface{}) error {
+func (t *TransactionEnvelope) Scan(src any) error {
 	return safeBase64Scan(src, t)
 }
 
 // Scan reads from src into an TransactionMeta struct
-func (t *TransactionMeta) Scan(src interface{}) error {
+func (t *TransactionMeta) Scan(src any) error {
 	return safeBase64Scan(src, t)
 }
 
 // Scan reads from src into an TransactionResult struct
-func (t *TransactionResult) Scan(src interface{}) error {
+func (t *TransactionResult) Scan(src any) error {
 	return safeBase64Scan(src, t)
 }
 
 // Scan reads from src into an TransactionResultPair struct
-func (t *TransactionResultPair) Scan(src interface{}) error {
+func (t *TransactionResultPair) Scan(src any) error {
 	return safeBase64Scan(src, t)
 }
 
 // safeBase64Scan scans from src (which should be either a []byte or string)
 // into dest by using `SafeUnmarshalBase64`.
-func safeBase64Scan(src, dest interface{}) error {
+func safeBase64Scan(src, dest any) error {
 	var val string
 	switch src := src.(type) {
 	case []byte:

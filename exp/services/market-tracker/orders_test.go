@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-var badAmtOrders = []hProtocol.PriceLevel{hProtocol.PriceLevel{
+var badAmtOrders = []hProtocol.PriceLevel{{
 	PriceR: hProtocol.Price{
 		N: 4,
 		D: 2,

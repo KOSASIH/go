@@ -88,7 +88,7 @@ func TestSetTrustLineFlags(t *testing.T) {
 			var op2 SetTrustLineFlags
 			assert.NoError(t, op2.FromXDR(xdrOp2))
 			assert.Equal(t, op, op2)
-			testOperationsMarshallingRoundtrip(t, []Operation{&testcase.op}, false)
+			testOperationsMarshalingRoundtrip(t, []Operation{&testcase.op}, false)
 		})
 	}
 
@@ -100,5 +100,5 @@ func TestSetTrustLineFlags(t *testing.T) {
 		ClearFlags:    []TrustLineFlag{TrustLineAuthorized, TrustLineAuthorizedToMaintainLiabilities},
 		SourceAccount: "MA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJVAAAAAAAAAAAAAJLK",
 	}
-	testOperationsMarshallingRoundtrip(t, []Operation{&setTrustLineFlags}, true)
+	testOperationsMarshalingRoundtrip(t, []Operation{&setTrustLineFlags}, true)
 }

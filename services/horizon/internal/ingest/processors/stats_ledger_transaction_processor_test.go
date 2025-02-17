@@ -1,7 +1,6 @@
 package processors
 
 import (
-	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -23,12 +22,14 @@ func TestStatsLedgerTransactionProcessoAllOpTypesCovered(t *testing.T) {
 			},
 		},
 	}
+	lcm := xdr.LedgerCloseMeta{}
+
 	for typ, s := range xdr.OperationTypeToStringMap {
 		tx := txTemplate
 		txTemplate.Envelope.V1.Tx.Operations[0].Body.Type = xdr.OperationType(typ)
 		f := func() {
 			var p StatsLedgerTransactionProcessor
-			p.ProcessTransaction(context.Background(), tx)
+			p.ProcessTransaction(lcm, tx)
 		}
 		assert.NotPanics(t, f, s)
 	}
@@ -38,16 +39,47 @@ func TestStatsLedgerTransactionProcessoAllOpTypesCovered(t *testing.T) {
 	txTemplate.Envelope.V1.Tx.Operations[0].Body.Type = 20000
 	f := func() {
 		var p StatsLedgerTransactionProcessor
-		p.ProcessTransaction(context.Background(), tx)
+		p.ProcessTransaction(lcm, tx)
 	}
 	assert.Panics(t, f)
 }
 
+func TestStatsLedgerTransactionProcessorReset(t *testing.T) {
+	processor := NewStatsLedgerTransactionProcessor()
+	lcm := xdr.LedgerCloseMeta{}
+
+	assert.NoError(t, processor.ProcessTransaction(lcm, ingest.LedgerTransaction{
+		Result: xdr.TransactionResultPair{
+			Result: xdr.TransactionResult{
+				Result: xdr.TransactionResultResult{
+					Code: xdr.TransactionResultCodeTxSuccess,
+				},
+			},
+		},
+		Envelope: xdr.TransactionEnvelope{
+			Type: xdr.EnvelopeTypeEnvelopeTypeTx,
+			V1: &xdr.TransactionV1Envelope{
+				Tx: xdr.Transaction{
+					Operations: []xdr.Operation{
+						{Body: xdr.OperationBody{Type: xdr.OperationTypeCreateAccount}},
+						{Body: xdr.OperationBody{Type: xdr.OperationTypePayment}},
+					},
+				},
+			},
+		},
+	}))
+
+	assert.Equal(t, processor.GetResults().Operations, int64(2))
+	processor.ResetStats()
+	assert.Equal(t, processor.GetResults().Operations, int64(0))
+}
+
 func TestStatsLedgerTransactionProcessor(t *testing.T) {
-	processor := &StatsLedgerTransactionProcessor{}
+	processor := NewStatsLedgerTransactionProcessor()
+	lcm := xdr.LedgerCloseMeta{}
 
 	// Successful
-	assert.NoError(t, processor.ProcessTransaction(context.Background(), ingest.LedgerTransaction{
+	assert.NoError(t, processor.ProcessTransaction(lcm, ingest.LedgerTransaction{
 		Result: xdr.TransactionResultPair{
 			Result: xdr.TransactionResult{
 				Result: xdr.TransactionResultResult{
@@ -88,7 +120,7 @@ func TestStatsLedgerTransactionProcessor(t *testing.T) {
 	}))
 
 	// Failed
-	assert.NoError(t, processor.ProcessTransaction(context.Background(), ingest.LedgerTransaction{
+	assert.NoError(t, processor.ProcessTransaction(lcm, ingest.LedgerTransaction{
 		Result: xdr.TransactionResultPair{
 			Result: xdr.TransactionResult{
 				Result: xdr.TransactionResultResult{

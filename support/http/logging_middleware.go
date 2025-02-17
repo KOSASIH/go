@@ -2,11 +2,13 @@ package http
 
 import (
 	stdhttp "net/http"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/go-chi/chi"
 	"github.com/go-chi/chi/middleware"
+
 	"github.com/stellar/go/support/http/mutil"
 	"github.com/stellar/go/support/log"
 )
@@ -57,6 +59,50 @@ func LoggingMiddlewareWithOptions(options Options) func(stdhttp.Handler) stdhttp
 	}
 }
 
+var routeRegexp = regexp.MustCompile("{([^:}]*):[^}]*}")
+
+// https://prometheus.io/docs/instrumenting/exposition_formats/
+// label_value can be any sequence of UTF-8 characters, but the backslash (\),
+// double-quote ("), and line feed (\n) characters have to be escaped as \\,
+// \", and \n, respectively.
+func sanitizeMetricRoute(routePattern string) string {
+	route := routeRegexp.ReplaceAllString(routePattern, "{$1}")
+	route = strings.ReplaceAll(route, "\\", "\\\\")
+	route = strings.ReplaceAll(route, "\"", "\\\"")
+	route = strings.ReplaceAll(route, "\n", "\\n")
+	if route == "" {
+		// Can be empty when request did not reach the final route (ex. blocked by
+		// a middleware). More info: https://github.com/go-chi/chi/issues/270
+		return "undefined"
+	}
+	return route
+}
+
+// GetChiRoutePattern returns the chi route pattern from the given request context.
+// Author: https://github.com/rliebz
+// From: https://github.com/go-chi/chi/issues/270#issuecomment-479184559
+// https://github.com/go-chi/chi/blob/master/LICENSE
+func GetChiRoutePattern(r *stdhttp.Request) string {
+	rctx := chi.RouteContext(r.Context())
+	if pattern := rctx.RoutePattern(); pattern != "" {
+		// Pattern is already available
+		return pattern
+	}
+
+	routePath := r.URL.Path
+	if r.URL.RawPath != "" {
+		routePath = r.URL.RawPath
+	}
+
+	tctx := chi.NewRouteContext()
+	if !rctx.Routes.Match(tctx, r.Method, routePath) {
+		return ""
+	}
+
+	// tctx has the updated pattern, since Match mutates it
+	return sanitizeMetricRoute(tctx.RoutePattern())
+}
+
 // logStartOfRequest emits the logline that reports that an http request is
 // beginning processing.
 func logStartOfRequest(
@@ -91,6 +137,7 @@ func logEndOfRequest(
 		"subsys":   "http",
 		"path":     r.URL.String(),
 		"method":   r.Method,
+		"ip":       r.RemoteAddr,
 		"status":   mw.Status(),
 		"bytes":    mw.BytesWritten(),
 		"duration": duration,

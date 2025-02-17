@@ -11,6 +11,8 @@ import (
 	"io/ioutil"
 	"strings"
 	"sync"
+
+	"github.com/stellar/go/support/storage"
 )
 
 type MockArchiveBackend struct {
@@ -83,7 +85,11 @@ func (b *MockArchiveBackend) CanListFiles() bool {
 	return true
 }
 
-func makeMockBackend(opts ConnectOptions) ArchiveBackend {
+func (b *MockArchiveBackend) Close() error {
+	return nil
+}
+
+func makeMockBackend() storage.Storage {
 	b := new(MockArchiveBackend)
 	b.files = make(map[string][]byte)
 	return b

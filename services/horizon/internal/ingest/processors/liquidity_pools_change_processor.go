@@ -11,7 +11,7 @@ import (
 
 type LiquidityPoolsChangeProcessor struct {
 	qLiquidityPools history.QLiquidityPools
-	cache           *ingest.ChangeCompactor
+	lps             []history.LiquidityPool
 	sequence        uint32
 }
 
@@ -24,8 +24,12 @@ func NewLiquidityPoolsChangeProcessor(Q history.QLiquidityPools, sequence uint32
 	return p
 }
 
+func (p *LiquidityPoolsChangeProcessor) Name() string {
+	return "processors.LiquidityPoolsChangeProcessor"
+}
+
 func (p *LiquidityPoolsChangeProcessor) reset() {
-	p.cache = ingest.NewChangeCompactor()
+	p.lps = []history.LiquidityPool{}
 }
 
 func (p *LiquidityPoolsChangeProcessor) ProcessChange(ctx context.Context, change ingest.Change) error {
@@ -33,45 +37,34 @@ func (p *LiquidityPoolsChangeProcessor) ProcessChange(ctx context.Context, chang
 		return nil
 	}
 
-	err := p.cache.AddChange(change)
-	if err != nil {
-		return errors.Wrap(err, "error adding to ledgerCache")
+	switch {
+	case change.Pre == nil && change.Post != nil:
+		// Created
+		p.lps = append(p.lps, p.ledgerEntryToRow(change.Post))
+	case change.Pre != nil && change.Post == nil:
+		// Removed
+		lp := p.ledgerEntryToRow(change.Pre)
+		lp.Deleted = true
+		lp.LastModifiedLedger = p.sequence
+		p.lps = append(p.lps, lp)
+	default:
+		// Updated
+		p.lps = append(p.lps, p.ledgerEntryToRow(change.Post))
 	}
 
-	if p.cache.Size() > maxBatchSize {
-		err = p.Commit(ctx)
-		if err != nil {
+	if len(p.lps) > maxBatchSize {
+		if err := p.Commit(ctx); err != nil {
 			return errors.Wrap(err, "error in Commit")
 		}
-		p.reset()
 	}
 
 	return nil
 }
 
 func (p *LiquidityPoolsChangeProcessor) Commit(ctx context.Context) error {
-
-	changes := p.cache.GetChanges()
-	var lps []history.LiquidityPool
-	for _, change := range changes {
-		switch {
-		case change.Pre == nil && change.Post != nil:
-			// Created
-			lps = append(lps, p.ledgerEntryToRow(change.Post))
-		case change.Pre != nil && change.Post == nil:
-			// Removed
-			lp := p.ledgerEntryToRow(change.Pre)
-			lp.Deleted = true
-			lp.LastModifiedLedger = p.sequence
-			lps = append(lps, lp)
-		default:
-			// Updated
-			lps = append(lps, p.ledgerEntryToRow(change.Post))
-		}
-	}
-
-	if len(lps) > 0 {
-		if err := p.qLiquidityPools.UpsertLiquidityPools(ctx, lps); err != nil {
+	defer p.reset()
+	if len(p.lps) > 0 {
+		if err := p.qLiquidityPools.UpsertLiquidityPools(ctx, p.lps); err != nil {
 			return errors.Wrap(err, "error upserting liquidity pools")
 		}
 	}

@@ -11,6 +11,7 @@ import (
 	"github.com/stellar/go/support/render/hal"
 	"github.com/stellar/go/support/test"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestNewEffectAllEffectsCovered(t *testing.T) {
@@ -42,13 +43,13 @@ func TestNewEffectAllEffectsCovered(t *testing.T) {
 func TestEffectTypeNamesAreConsistentWithAdapterTypeNames(t *testing.T) {
 	for typ, s := range EffectTypeNames {
 		s2, ok := effects.EffectTypeNames[effects.EffectType(typ)]
-		assert.True(t, ok, s)
-		assert.Equal(t, s, s2)
+		require.True(t, ok, s)
+		require.Equal(t, s, s2)
 	}
 	for typ, s := range effects.EffectTypeNames {
 		s2, ok := EffectTypeNames[history.EffectType(typ)]
-		assert.True(t, ok, s)
-		assert.Equal(t, s, s2)
+		require.True(t, ok, s)
+		require.Equal(t, s, s2)
 	}
 }
 

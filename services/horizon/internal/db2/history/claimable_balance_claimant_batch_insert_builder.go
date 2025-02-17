@@ -4,39 +4,43 @@ import (
 	"context"
 
 	"github.com/stellar/go/support/db"
-	"github.com/stellar/go/xdr"
 )
 
-// ClaimableBalanceClaimantBatchInsertBuilder is used to insert transactions into the
-// history_transactions table
+// ClaimableBalanceClaimantBatchInsertBuilder is used to insert claimants into the
+// claimable_balance_claimants table
 type ClaimableBalanceClaimantBatchInsertBuilder interface {
-	Add(ctx context.Context, claimableBalanceClaimant ClaimableBalanceClaimant) error
+	Add(claimableBalanceClaimant ClaimableBalanceClaimant) error
 	Exec(ctx context.Context) error
+	Len() int
 }
 
-// ClaimableBalanceClaimantBatchInsertBuilder is a simple wrapper around db.BatchInsertBuilder
+// ClaimableBalanceClaimantBatchInsertBuilder is a simple wrapper around db.FastBatchInsertBuilder
 type claimableBalanceClaimantBatchInsertBuilder struct {
-	encodingBuffer *xdr.EncodingBuffer
-	builder        db.BatchInsertBuilder
+	session db.SessionInterface
+	builder db.FastBatchInsertBuilder
+	table   string
 }
 
 // NewClaimableBalanceClaimantBatchInsertBuilder constructs a new ClaimableBalanceClaimantBatchInsertBuilder instance
-func (q *Q) NewClaimableBalanceClaimantBatchInsertBuilder(maxBatchSize int) ClaimableBalanceClaimantBatchInsertBuilder {
+func (q *Q) NewClaimableBalanceClaimantBatchInsertBuilder() ClaimableBalanceClaimantBatchInsertBuilder {
 	return &claimableBalanceClaimantBatchInsertBuilder{
-		encodingBuffer: xdr.NewEncodingBuffer(),
-		builder: db.BatchInsertBuilder{
-			Table:        q.GetTable("claimable_balance_claimants"),
-			MaxBatchSize: maxBatchSize,
-			Suffix:       "ON CONFLICT (id, destination) DO UPDATE SET last_modified_ledger=EXCLUDED.last_modified_ledger",
-		},
+		session: q,
+		builder: db.FastBatchInsertBuilder{},
+		table:   "claimable_balance_claimants",
 	}
 }
 
-// Add adds a new transaction to the batch
-func (i *claimableBalanceClaimantBatchInsertBuilder) Add(ctx context.Context, claimableBalanceClaimant ClaimableBalanceClaimant) error {
-	return i.builder.RowStruct(ctx, claimableBalanceClaimant)
+// Add adds a new claimant to the batch
+func (i *claimableBalanceClaimantBatchInsertBuilder) Add(claimableBalanceClaimant ClaimableBalanceClaimant) error {
+	return i.builder.RowStruct(claimableBalanceClaimant)
 }
 
+// Exec writes the batch of claimants to the database.
 func (i *claimableBalanceClaimantBatchInsertBuilder) Exec(ctx context.Context) error {
-	return i.builder.Exec(ctx)
+	return i.builder.Exec(ctx, i.session, i.table)
+}
+
+// Len returns the number of items in the batch.
+func (i *claimableBalanceClaimantBatchInsertBuilder) Len() int {
+	return i.builder.Len()
 }

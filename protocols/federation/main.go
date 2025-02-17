@@ -26,7 +26,7 @@ type Memo struct {
 }
 
 func (m Memo) MarshalJSON() ([]byte, error) {
-	// Memo after marshalling should always be a string
+	// Memo after marshaling should always be a string
 	value, err := json.Marshal(m.Value)
 	if err != nil {
 		return []byte{}, err

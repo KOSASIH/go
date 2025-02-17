@@ -85,7 +85,7 @@ func TestChangeTrustRoundtrip(t *testing.T) {
 		Line:          CreditAsset{"ABCD", "GB7BDSZU2Y27LYNLALKKALB52WS2IZWYBDGY6EQBLEED3TJOCVMZRH7H"}.MustToChangeTrustAsset(),
 		Limit:         "1.0000000",
 	}
-	testOperationsMarshallingRoundtrip(t, []Operation{&changeTrust}, false)
+	testOperationsMarshalingRoundtrip(t, []Operation{&changeTrust}, false)
 
 	// with muxed accounts
 	changeTrust = ChangeTrust{
@@ -93,5 +93,5 @@ func TestChangeTrustRoundtrip(t *testing.T) {
 		Line:          CreditAsset{"ABCD", "GB7BDSZU2Y27LYNLALKKALB52WS2IZWYBDGY6EQBLEED3TJOCVMZRH7H"}.MustToChangeTrustAsset(),
 		Limit:         "1.0000000",
 	}
-	testOperationsMarshallingRoundtrip(t, []Operation{&changeTrust}, true)
+	testOperationsMarshalingRoundtrip(t, []Operation{&changeTrust}, true)
 }

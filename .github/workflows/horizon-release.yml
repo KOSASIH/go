@@ -7,7 +7,7 @@ on:
 jobs:
 
   publish-artifacts:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
     name: Upload artifacts to GitHub release
     steps:
       - name: Run deprecation tests
@@ -22,7 +22,7 @@ jobs:
 
       - uses: ./.github/actions/setup-go
         with:
-          go-version: 1.20.1
+          go-version: "1.23"
 
       - name: Check dependencies
         run: ./gomod.sh

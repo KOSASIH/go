@@ -79,7 +79,9 @@ func TestGetOfferByIDHandler(t *testing.T) {
 	handler := GetOfferByID{}
 
 	ledgerCloseTime := time.Now().Unix()
-	_, err := q.InsertLedger(tt.Ctx, xdr.LedgerHeaderHistoryEntry{
+	assert.NoError(t, q.Begin(tt.Ctx))
+	ledgerBatch := q.NewLedgerBatchInsertBuilder()
+	err := ledgerBatch.Add(xdr.LedgerHeaderHistoryEntry{
 		Header: xdr.LedgerHeader{
 			LedgerSeq: 3,
 			ScpValue: xdr.StellarValue{
@@ -87,7 +89,9 @@ func TestGetOfferByIDHandler(t *testing.T) {
 			},
 		},
 	}, 0, 0, 0, 0, 0)
-	tt.Assert.NoError(err)
+	assert.NoError(t, err)
+	assert.NoError(t, ledgerBatch.Exec(tt.Ctx, q))
+	assert.NoError(t, q.Commit())
 
 	err = q.UpsertOffers(tt.Ctx, []history.Offer{eurOffer, usdOffer})
 	tt.Assert.NoError(err)
@@ -186,7 +190,9 @@ func TestGetOffersHandler(t *testing.T) {
 	handler := GetOffersHandler{}
 
 	ledgerCloseTime := time.Now().Unix()
-	_, err := q.InsertLedger(tt.Ctx, xdr.LedgerHeaderHistoryEntry{
+	assert.NoError(t, q.Begin(tt.Ctx))
+	ledgerBatch := q.NewLedgerBatchInsertBuilder()
+	err := ledgerBatch.Add(xdr.LedgerHeaderHistoryEntry{
 		Header: xdr.LedgerHeader{
 			LedgerSeq: 3,
 			ScpValue: xdr.StellarValue{
@@ -194,7 +200,9 @@ func TestGetOffersHandler(t *testing.T) {
 			},
 		},
 	}, 0, 0, 0, 0, 0)
-	tt.Assert.NoError(err)
+	assert.NoError(t, err)
+	assert.NoError(t, ledgerBatch.Exec(tt.Ctx, q))
+	assert.NoError(t, q.Commit())
 
 	err = q.UpsertOffers(tt.Ctx, []history.Offer{eurOffer, twoEurOffer, usdOffer})
 	tt.Assert.NoError(err)

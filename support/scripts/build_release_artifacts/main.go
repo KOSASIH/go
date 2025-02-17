@@ -321,11 +321,6 @@ func prepareDest(pkg, bin, version, os, arch string) string {
 	run("cp", "COPYING", dest)
 	run("cp", filepath.Join(pkg, "README.md"), dest)
 	run("cp", filepath.Join(pkg, "CHANGELOG.md"), dest)
-	if bin == "horizon" {
-		// Add default config files for Captive-Core
-		run("cp", filepath.Join(pkg, "configs/captive-core-pubnet.cfg"), dest)
-		run("cp", filepath.Join(pkg, "configs/captive-core-testnet.cfg"), dest)
-	}
 	return dest
 }
 

@@ -2,26 +2,195 @@ package actions
 
 import (
 	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/guregu/null"
+	"github.com/stretchr/testify/assert"
+
+	"github.com/stellar/go/ingest"
 	"github.com/stellar/go/protocols/horizon/operations"
 	"github.com/stellar/go/services/horizon/internal/db2/history"
 	"github.com/stellar/go/services/horizon/internal/ledger"
 	"github.com/stellar/go/services/horizon/internal/render/problem"
 	"github.com/stellar/go/services/horizon/internal/test"
 	supportProblem "github.com/stellar/go/support/render/problem"
+	"github.com/stellar/go/toid"
+	"github.com/stellar/go/xdr"
 )
+
+func TestInvokeHostFnDetailsInPaymentOperations(t *testing.T) {
+	tt := test.Start(t)
+	defer tt.Finish()
+	test.ResetHorizonDB(t, tt.HorizonDB)
+
+	q := &history.Q{tt.HorizonSession()}
+	handler := GetOperationsHandler{OnlyPayments: true,
+		LedgerState: &ledger.State{},
+	}
+	handler.LedgerState.SetHorizonStatus(ledger.HorizonStatus{
+		HistoryLatest:    56,
+		HistoryElder:     56,
+		ExpHistoryLatest: 56,
+	})
+	txIndex := int32(1)
+	sequence := int32(56)
+	txID := toid.New(sequence, txIndex, 0).ToInt64()
+	opID1 := toid.New(sequence, txIndex, 1).ToInt64()
+
+	ledgerCloseTime := time.Now().Unix()
+	ledgerBatch := q.NewLedgerBatchInsertBuilder()
+	err := ledgerBatch.Add(
+		xdr.LedgerHeaderHistoryEntry{
+			Header: xdr.LedgerHeader{
+				LedgerSeq: xdr.Uint32(sequence),
+				ScpValue: xdr.StellarValue{
+					CloseTime: xdr.TimePoint(ledgerCloseTime),
+				},
+			},
+		}, 1, 0, 1, 0, 0)
+	tt.Assert.NoError(err)
+	tt.Assert.NoError(q.Begin(tt.Ctx))
+	tt.Assert.NoError(ledgerBatch.Exec(tt.Ctx, q))
+
+	transactionBuilder := q.NewTransactionBatchInsertBuilder()
+	firstTransaction := buildLedgerTransaction(tt.T, testTransaction{
+		index:         uint32(txIndex),
+		envelopeXDR:   "AAAAACiSTRmpH6bHC6Ekna5e82oiGY5vKDEEUgkq9CB//t+rAAAAyAEXUhsAADDRAAAAAAAAAAAAAAABAAAAAAAAAAsBF1IbAABX4QAAAAAAAAAA",
+		resultXDR:     "AAAAAAAAASwAAAAAAAAAAwAAAAAAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAFAAAAAAAAAAA=",
+		feeChangesXDR: "AAAAAA==",
+		metaXDR:       "AAAAAQAAAAAAAAAA",
+		hash:          "19aaa18db88605aedec04659fb45e06f240b022eb2d429e05133e4d53cd945ba",
+	})
+	err = transactionBuilder.Add(firstTransaction, uint32(sequence))
+	tt.Assert.NoError(err)
+	tt.Assert.NoError(transactionBuilder.Exec(tt.Ctx, q))
+
+	operationBuilder := q.NewOperationBatchInsertBuilder()
+
+	err = operationBuilder.Add(
+		opID1,
+		txID,
+		1,
+		xdr.OperationTypeInvokeHostFunction,
+		[]byte(`{
+			"function": "HostFunctionTypeHostFunctionTypeInvokeContract",
+			"parameters": [
+				{
+					"value": "AAAADwAAAAdmbl9uYW1lAA==",
+					"type": "Sym"
+				},
+				{
+					"value": "AAAAAwAAAAI=",
+					"type": "U32"
+				}
+			],
+			"asset_balance_changes": [
+                {
+					"asset_type": "credit_alphanum4",
+					"asset_code": "abc",
+					"asset_issuer": "123",
+					"from": "C_CONTRACT_ADDRESS1",
+					"to": "G_CLASSIC_ADDRESS1",
+					"amount": "3",
+					"type": "transfer"
+				},
+				{
+					"asset_type": "credit_alphanum4",
+					"asset_code": "abc",
+					"asset_issuer": "123",
+					"from": "G_CLASSIC_ADDRESS2",
+					"to": "G_CLASSIC_ADDRESS3",
+					"amount": "5",
+					"type": "clawback"
+				},
+				{
+					"asset_type": "credit_alphanum4",
+					"asset_code": "abc",
+					"asset_issuer": "123",
+					"from": "G_CLASSIC_ADDRESS2",
+					"amount": "6",
+					"type": "burn"
+				},
+				{
+					"asset_type": "credit_alphanum4",
+					"asset_code": "abc",
+					"asset_issuer": "123",
+					"from": "G_CLASSIC_ADDRESS2",
+					"to": "C_CONTRACT_ADDRESS3",
+					"amount": "10",
+					"type": "mint"
+				}
+			]
+		}`),
+		"GAUJETIZVEP2NRYLUESJ3LS66NVCEGMON4UDCBCSBEVPIID773P2W6AY",
+		null.String{},
+		true)
+	tt.Assert.NoError(err)
+	tt.Assert.NoError(operationBuilder.Exec(tt.Ctx, q))
+	tt.Assert.NoError(q.Commit())
+
+	records, err := handler.GetResourcePage(
+		httptest.NewRecorder(),
+		makeRequest(
+			t, map[string]string{}, map[string]string{}, q,
+		),
+	)
+	tt.Assert.NoError(err)
+	tt.Assert.Len(records, 1)
+
+	op := records[0].(operations.InvokeHostFunction)
+	tt.Assert.Equal(op.Function, "HostFunctionTypeHostFunctionTypeInvokeContract")
+	tt.Assert.Equal(len(op.Parameters), 2)
+	tt.Assert.Equal(op.Parameters[0].Value, "AAAADwAAAAdmbl9uYW1lAA==")
+	tt.Assert.Equal(op.Parameters[0].Type, "Sym")
+	tt.Assert.Equal(op.Parameters[1].Value, "AAAAAwAAAAI=")
+	tt.Assert.Equal(op.Parameters[1].Type, "U32")
+
+	tt.Assert.Equal(len(op.AssetBalanceChanges), 4)
+	tt.Assert.Equal(op.AssetBalanceChanges[0].From, "C_CONTRACT_ADDRESS1")
+	tt.Assert.Equal(op.AssetBalanceChanges[0].To, "G_CLASSIC_ADDRESS1")
+	tt.Assert.Equal(op.AssetBalanceChanges[0].Amount, "3")
+	tt.Assert.Equal(op.AssetBalanceChanges[0].Type, "transfer")
+	tt.Assert.Equal(op.AssetBalanceChanges[0].Asset.Type, "credit_alphanum4")
+	tt.Assert.Equal(op.AssetBalanceChanges[0].Asset.Code, "abc")
+	tt.Assert.Equal(op.AssetBalanceChanges[0].Asset.Issuer, "123")
+	tt.Assert.Equal(op.AssetBalanceChanges[1].From, "G_CLASSIC_ADDRESS2")
+	tt.Assert.Equal(op.AssetBalanceChanges[1].To, "G_CLASSIC_ADDRESS3")
+	tt.Assert.Equal(op.AssetBalanceChanges[1].Amount, "5")
+	tt.Assert.Equal(op.AssetBalanceChanges[1].Type, "clawback")
+	tt.Assert.Equal(op.AssetBalanceChanges[1].Asset.Type, "credit_alphanum4")
+	tt.Assert.Equal(op.AssetBalanceChanges[1].Asset.Code, "abc")
+	tt.Assert.Equal(op.AssetBalanceChanges[1].Asset.Issuer, "123")
+	tt.Assert.Equal(op.AssetBalanceChanges[2].From, "G_CLASSIC_ADDRESS2")
+	tt.Assert.Equal(op.AssetBalanceChanges[2].To, "")
+	tt.Assert.Equal(op.AssetBalanceChanges[2].Amount, "6")
+	tt.Assert.Equal(op.AssetBalanceChanges[2].Type, "burn")
+	tt.Assert.Equal(op.AssetBalanceChanges[2].Asset.Type, "credit_alphanum4")
+	tt.Assert.Equal(op.AssetBalanceChanges[2].Asset.Code, "abc")
+	tt.Assert.Equal(op.AssetBalanceChanges[2].Asset.Issuer, "123")
+	tt.Assert.Equal(op.AssetBalanceChanges[3].From, "G_CLASSIC_ADDRESS2")
+	tt.Assert.Equal(op.AssetBalanceChanges[3].To, "C_CONTRACT_ADDRESS3")
+	tt.Assert.Equal(op.AssetBalanceChanges[3].Amount, "10")
+	tt.Assert.Equal(op.AssetBalanceChanges[3].Type, "mint")
+	tt.Assert.Equal(op.AssetBalanceChanges[3].Asset.Type, "credit_alphanum4")
+	tt.Assert.Equal(op.AssetBalanceChanges[3].Asset.Code, "abc")
+	tt.Assert.Equal(op.AssetBalanceChanges[3].Asset.Issuer, "123")
+}
 
 func TestGetOperationsWithoutFilter(t *testing.T) {
 	tt := test.Start(t)
 	defer tt.Finish()
-	tt.Scenario("base")
 
 	q := &history.Q{tt.HorizonSession()}
-	handler := GetOperationsHandler{}
+	handler := GetOperationsHandler{
+		LedgerState: &ledger.State{},
+	}
+	handler.LedgerState.SetStatus(tt.Scenario("base"))
 
 	records, err := handler.GetResourcePage(
 		httptest.NewRecorder(),
@@ -36,10 +205,12 @@ func TestGetOperationsWithoutFilter(t *testing.T) {
 func TestGetOperationsExclusiveFilters(t *testing.T) {
 	tt := test.Start(t)
 	defer tt.Finish()
-	tt.Scenario("base")
 
 	q := &history.Q{tt.HorizonSession()}
-	handler := GetOperationsHandler{}
+	handler := GetOperationsHandler{
+		LedgerState: &ledger.State{},
+	}
+	handler.LedgerState.SetStatus(tt.Scenario("base"))
 
 	testCases := []struct {
 		desc  string
@@ -95,10 +266,12 @@ func TestGetOperationsByLiquidityPool(t *testing.T) {
 func TestGetOperationsFilterByAccountID(t *testing.T) {
 	tt := test.Start(t)
 	defer tt.Finish()
-	tt.Scenario("base")
 
 	q := &history.Q{tt.HorizonSession()}
-	handler := GetOperationsHandler{}
+	handler := GetOperationsHandler{
+		LedgerState: &ledger.State{},
+	}
+	handler.LedgerState.SetStatus(tt.Scenario("base"))
 
 	testCases := []struct {
 		accountID string
@@ -136,10 +309,12 @@ func TestGetOperationsFilterByAccountID(t *testing.T) {
 func TestGetOperationsFilterByTxID(t *testing.T) {
 	tt := test.Start(t)
 	defer tt.Finish()
-	tt.Scenario("base")
 
 	q := &history.Q{tt.HorizonSession()}
-	handler := GetOperationsHandler{}
+	handler := GetOperationsHandler{
+		LedgerState: &ledger.State{},
+	}
+	handler.LedgerState.SetStatus(tt.Scenario("base"))
 
 	testCases := []struct {
 		desc          string
@@ -210,10 +385,12 @@ func TestGetOperationsFilterByTxID(t *testing.T) {
 func TestGetOperationsIncludeFailed(t *testing.T) {
 	tt := test.Start(t)
 	defer tt.Finish()
-	tt.Scenario("failed_transactions")
 
 	q := &history.Q{tt.HorizonSession()}
-	handler := GetOperationsHandler{}
+	handler := GetOperationsHandler{
+		LedgerState: &ledger.State{},
+	}
+	handler.LedgerState.SetStatus(tt.Scenario("failed_transactions"))
 
 	records, err := handler.GetResourcePage(
 		httptest.NewRecorder(),
@@ -340,10 +517,12 @@ func TestGetOperationsIncludeFailed(t *testing.T) {
 func TestGetOperationsFilterByLedgerID(t *testing.T) {
 	tt := test.Start(t)
 	defer tt.Finish()
-	tt.Scenario("base")
 
 	q := &history.Q{tt.HorizonSession()}
-	handler := GetOperationsHandler{}
+	handler := GetOperationsHandler{
+		LedgerState: &ledger.State{},
+	}
+	handler.LedgerState.SetStatus(tt.Scenario("base"))
 
 	testCases := []struct {
 		ledgerID    string
@@ -411,12 +590,13 @@ func TestGetOperationsFilterByLedgerID(t *testing.T) {
 func TestGetOperationsOnlyPayments(t *testing.T) {
 	tt := test.Start(t)
 	defer tt.Finish()
-	tt.Scenario("base")
 
 	q := &history.Q{tt.HorizonSession()}
 	handler := GetOperationsHandler{
+		LedgerState:  &ledger.State{},
 		OnlyPayments: true,
 	}
+	handler.LedgerState.SetStatus(tt.Scenario("base"))
 
 	records, err := handler.GetResourcePage(
 		httptest.NewRecorder(),
@@ -460,7 +640,7 @@ func TestGetOperationsOnlyPayments(t *testing.T) {
 	tt.Assert.NoError(err)
 	tt.Assert.Len(records, 1)
 
-	tt.Scenario("pathed_payment")
+	handler.LedgerState.SetStatus(tt.Scenario("pathed_payment"))
 
 	records, err = handler.GetResourcePage(
 		httptest.NewRecorder(),
@@ -491,10 +671,12 @@ func TestGetOperationsOnlyPayments(t *testing.T) {
 func TestOperation_CreatedAt(t *testing.T) {
 	tt := test.Start(t)
 	defer tt.Finish()
-	tt.Scenario("base")
 
 	q := &history.Q{tt.HorizonSession()}
-	handler := GetOperationsHandler{}
+	handler := GetOperationsHandler{
+		LedgerState: &ledger.State{},
+	}
+	handler.LedgerState.SetStatus(tt.Scenario("base"))
 
 	records, err := handler.GetResourcePage(
 		httptest.NewRecorder(),
@@ -516,12 +698,12 @@ func TestOperation_CreatedAt(t *testing.T) {
 func TestGetOperationsPagination(t *testing.T) {
 	tt := test.Start(t)
 	defer tt.Finish()
-	tt.Scenario("base")
 
 	q := &history.Q{tt.HorizonSession()}
 	handler := GetOperationsHandler{
 		LedgerState: &ledger.State{},
 	}
+	handler.LedgerState.SetStatus(tt.Scenario("base"))
 
 	records, err := handler.GetResourcePage(
 		httptest.NewRecorder(),
@@ -569,16 +751,18 @@ func TestGetOperationsPagination(t *testing.T) {
 		),
 	)
 	tt.Assert.Error(err)
-	tt.Assert.EqualError(err, "problem: before_history")
+	tt.Assert.True(strings.Contains(err.Error(), "problem: before_history"))
 }
 
 func TestGetOperations_IncludeTransactions(t *testing.T) {
 	tt := test.Start(t)
 	defer tt.Finish()
-	tt.Scenario("failed_transactions")
 
 	q := &history.Q{tt.HorizonSession()}
-	handler := GetOperationsHandler{}
+	handler := GetOperationsHandler{
+		LedgerState: &ledger.State{},
+	}
+	handler.LedgerState.SetStatus(tt.Scenario("failed_transactions"))
 
 	_, err := handler.GetResourcePage(
 		httptest.NewRecorder(),
@@ -668,11 +852,12 @@ func TestGetOperation(t *testing.T) {
 func TestOperation_IncludeTransaction(t *testing.T) {
 	tt := test.Start(t)
 	defer tt.Finish()
-	tt.Scenario("kahuna")
 
 	handler := GetOperationByIDHandler{
 		LedgerState: &ledger.State{},
 	}
+	handler.LedgerState.SetStatus(tt.Scenario("kahuna"))
+
 	record, err := handler.GetResource(
 		httptest.NewRecorder(),
 		makeRequest(
@@ -694,4 +879,39 @@ func TestOperation_IncludeTransaction(t *testing.T) {
 	op = record.(operations.BumpSequence)
 	tt.Assert.NotNil(op.Transaction)
 	tt.Assert.Equal(op.TransactionHash, op.Transaction.ID)
+}
+
+type testTransaction struct {
+	index         uint32
+	envelopeXDR   string
+	resultXDR     string
+	feeChangesXDR string
+	metaXDR       string
+	hash          string
+}
+
+func buildLedgerTransaction(t *testing.T, tx testTransaction) ingest.LedgerTransaction {
+	transaction := ingest.LedgerTransaction{
+		Index:      tx.index,
+		Envelope:   xdr.TransactionEnvelope{},
+		Result:     xdr.TransactionResultPair{},
+		FeeChanges: xdr.LedgerEntryChanges{},
+		UnsafeMeta: xdr.TransactionMeta{},
+	}
+
+	tt := assert.New(t)
+
+	err := xdr.SafeUnmarshalBase64(tx.envelopeXDR, &transaction.Envelope)
+	tt.NoError(err)
+	err = xdr.SafeUnmarshalBase64(tx.resultXDR, &transaction.Result.Result)
+	tt.NoError(err)
+	err = xdr.SafeUnmarshalBase64(tx.metaXDR, &transaction.UnsafeMeta)
+	tt.NoError(err)
+	err = xdr.SafeUnmarshalBase64(tx.feeChangesXDR, &transaction.FeeChanges)
+	tt.NoError(err)
+
+	_, err = hex.Decode(transaction.Result.TransactionHash[:], []byte(tx.hash))
+	tt.NoError(err)
+
+	return transaction
 }

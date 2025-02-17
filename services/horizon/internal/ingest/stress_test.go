@@ -67,14 +67,14 @@ func (s *StressTestStateTestSuite) TestBounds() {
 func (s *StressTestStateTestSuite) TestBeginReturnsError() {
 	*s.historyQ = mockDBQ{}
 	s.historyQ.On("GetTx").Return(nil).Once()
-	s.historyQ.On("Begin").Return(errors.New("my error")).Once()
+	s.historyQ.On("Begin", s.ctx).Return(errors.New("my error")).Once()
 
 	err := s.system.StressTest(10, 4)
 	s.Assert().EqualError(err, "Error starting a transaction: my error")
 }
 
 func (s *StressTestStateTestSuite) TestGetLastLedgerIngestReturnsError() {
-	s.historyQ.On("Begin").Return(nil).Once()
+	s.historyQ.On("Begin", s.ctx).Return(nil).Once()
 	s.historyQ.On("GetLastLedgerIngest", s.ctx).Return(uint32(0), errors.New("my error")).Once()
 
 	err := s.system.StressTest(10, 4)
@@ -82,7 +82,7 @@ func (s *StressTestStateTestSuite) TestGetLastLedgerIngestReturnsError() {
 }
 
 func (s *StressTestStateTestSuite) TestGetLastLedgerIngestNonEmpty() {
-	s.historyQ.On("Begin").Return(nil).Once()
+	s.historyQ.On("Begin", s.ctx).Return(nil).Once()
 	s.historyQ.On("GetLastLedgerIngest", s.ctx).Return(uint32(100), nil).Once()
 
 	err := s.system.StressTest(10, 4)
@@ -90,7 +90,7 @@ func (s *StressTestStateTestSuite) TestGetLastLedgerIngestNonEmpty() {
 }
 
 func (s *StressTestStateTestSuite) TestRunAllProcessorsOnLedgerReturnsError() {
-	s.historyQ.On("Begin").Return(nil).Once()
+	s.historyQ.On("Begin", s.ctx).Return(nil).Once()
 	s.historyQ.On("GetLastLedgerIngest", s.ctx).Return(uint32(0), nil).Once()
 
 	s.runner.On("RunAllProcessorsOnLedger", mock.AnythingOfType("xdr.LedgerCloseMeta")).Return(
@@ -103,7 +103,7 @@ func (s *StressTestStateTestSuite) TestRunAllProcessorsOnLedgerReturnsError() {
 }
 
 func (s *StressTestStateTestSuite) TestUpdateLastLedgerIngestReturnsError() {
-	s.historyQ.On("Begin").Return(nil).Once()
+	s.historyQ.On("Begin", s.ctx).Return(nil).Once()
 	s.historyQ.On("GetLastLedgerIngest", s.ctx).Return(uint32(0), nil).Once()
 	s.runner.On("RunAllProcessorsOnLedger", mock.AnythingOfType("xdr.LedgerCloseMeta")).Return(
 		ledgerStats{},
@@ -116,7 +116,7 @@ func (s *StressTestStateTestSuite) TestUpdateLastLedgerIngestReturnsError() {
 }
 
 func (s *StressTestStateTestSuite) TestCommitReturnsError() {
-	s.historyQ.On("Begin").Return(nil).Once()
+	s.historyQ.On("Begin", s.ctx).Return(nil).Once()
 	s.historyQ.On("GetLastLedgerIngest", s.ctx).Return(uint32(0), nil).Once()
 	s.runner.On("RunAllProcessorsOnLedger", mock.AnythingOfType("xdr.LedgerCloseMeta")).Return(
 		ledgerStats{},
@@ -130,7 +130,7 @@ func (s *StressTestStateTestSuite) TestCommitReturnsError() {
 }
 
 func (s *StressTestStateTestSuite) TestSucceeds() {
-	s.historyQ.On("Begin").Return(nil).Once()
+	s.historyQ.On("Begin", s.ctx).Return(nil).Once()
 	s.historyQ.On("GetLastLedgerIngest", s.ctx).Return(uint32(0), nil).Once()
 	s.runner.On("RunAllProcessorsOnLedger", mock.AnythingOfType("xdr.LedgerCloseMeta")).Return(
 		ledgerStats{},

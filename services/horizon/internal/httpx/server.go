@@ -15,7 +15,6 @@ import (
 	"github.com/stellar/go/services/horizon/internal/ledger"
 	hProblem "github.com/stellar/go/services/horizon/internal/render/problem"
 	"github.com/stellar/go/services/horizon/internal/render/sse"
-	"github.com/stellar/go/services/horizon/internal/txsub/sequence"
 	"github.com/stellar/go/support/db"
 	"github.com/stellar/go/support/log"
 	"github.com/stellar/go/support/render/problem"
@@ -24,6 +23,8 @@ import (
 type ServerMetrics struct {
 	RequestDurationSummary  *prometheus.SummaryVec
 	ReplicaLagErrorsCounter prometheus.Counter
+	RequestsInFlightGauge   *prometheus.GaugeVec
+	RequestsReceivedCounter *prometheus.CounterVec
 }
 
 type TLSConfig struct {
@@ -49,7 +50,6 @@ func init() {
 	// register problems
 	problem.SetLogFilter(problem.LogUnknownErrors)
 	problem.RegisterError(sql.ErrNoRows, problem.NotFound)
-	problem.RegisterError(sequence.ErrNoMoreRoom, hProblem.ServerOverCapacity)
 	problem.RegisterError(db2.ErrInvalidCursor, problem.BadRequest)
 	problem.RegisterError(db2.ErrInvalidLimit, problem.BadRequest)
 	problem.RegisterError(db2.ErrInvalidOrder, problem.BadRequest)
@@ -68,9 +68,23 @@ func NewServer(serverConfig ServerConfig, routerConfig RouterConfig, ledgerState
 		RequestDurationSummary: prometheus.NewSummaryVec(
 			prometheus.SummaryOpts{
 				Namespace: "horizon", Subsystem: "http", Name: "requests_duration_seconds",
-				Help: "HTTP requests durations, sliding window = 10m",
+				Help:       "HTTP requests durations, sliding window = 10m",
+				Objectives: map[float64]float64{0.5: 0.05, 0.9: 0.01, 0.99: 0.001},
 			},
 			[]string{"status", "route", "streaming", "method"},
+		),
+		RequestsInFlightGauge: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: "horizon", Subsystem: "http", Name: "requests_in_flight",
+				Help: "HTTP requests in flight",
+			},
+			[]string{"route", "streaming", "method"},
+		),
+		RequestsReceivedCounter: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "horizon", Subsystem: "http", Name: "requests_received",
+			},
+			[]string{"route", "streaming", "method"},
 		),
 		ReplicaLagErrorsCounter: prometheus.NewCounter(
 			prometheus.CounterOpts{
@@ -110,6 +124,8 @@ func NewServer(serverConfig ServerConfig, routerConfig RouterConfig, ledgerState
 func (s *Server) RegisterMetrics(registry *prometheus.Registry) {
 	registry.MustRegister(s.Metrics.RequestDurationSummary)
 	registry.MustRegister(s.Metrics.ReplicaLagErrorsCounter)
+	registry.MustRegister(s.Metrics.RequestsInFlightGauge)
+	registry.MustRegister(s.Metrics.RequestsReceivedCounter)
 }
 
 func (s *Server) Serve() error {

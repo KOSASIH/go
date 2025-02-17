@@ -1,20 +1,200 @@
 package history
 
 import (
+	"bytes"
+	"context"
 	"database/sql"
+	"sort"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"golang.org/x/exp/slices"
 
 	"github.com/stellar/go/services/horizon/internal/db2"
 	"github.com/stellar/go/services/horizon/internal/test"
 	"github.com/stellar/go/xdr"
 )
 
+func TestAssetStatContracts(t *testing.T) {
+	tt := test.Start(t)
+	defer tt.Finish()
+	test.ResetHorizonDB(t, tt.HorizonDB)
+	q := &Q{tt.HorizonSession()}
+
+	tt.Assert.NoError(q.Begin(context.Background()))
+
+	assetStats := []ExpAssetStat{
+		{
+			AssetType: xdr.AssetTypeAssetTypeNative,
+			Accounts: ExpAssetStatAccounts{
+				Authorized:                      0,
+				AuthorizedToMaintainLiabilities: 0,
+				ClaimableBalances:               0,
+				LiquidityPools:                  0,
+				Unauthorized:                    0,
+			},
+			Balances: ExpAssetStatBalances{
+				Authorized:                      "0",
+				AuthorizedToMaintainLiabilities: "0",
+				ClaimableBalances:               "0",
+				LiquidityPools:                  "0",
+				Unauthorized:                    "0",
+			},
+		},
+		{
+			AssetType:   xdr.AssetTypeAssetTypeCreditAlphanum12,
+			AssetIssuer: "GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H",
+			AssetCode:   "ETHER",
+			Accounts: ExpAssetStatAccounts{
+				Authorized:                      1,
+				AuthorizedToMaintainLiabilities: 3,
+				Unauthorized:                    4,
+			},
+			Balances: ExpAssetStatBalances{
+				Authorized:                      "23",
+				AuthorizedToMaintainLiabilities: "2",
+				Unauthorized:                    "3",
+				ClaimableBalances:               "4",
+				LiquidityPools:                  "5",
+			},
+		},
+		{
+			AssetType:   xdr.AssetTypeAssetTypeCreditAlphanum4,
+			AssetIssuer: "GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H",
+			AssetCode:   "USD",
+			Accounts: ExpAssetStatAccounts{
+				Authorized:                      2,
+				AuthorizedToMaintainLiabilities: 3,
+				Unauthorized:                    4,
+			},
+			Balances: ExpAssetStatBalances{
+				Authorized:                      "1",
+				AuthorizedToMaintainLiabilities: "2",
+				Unauthorized:                    "3",
+				ClaimableBalances:               "4",
+				LiquidityPools:                  "5",
+			},
+		},
+	}
+	var contractID [32]byte
+	for i := 0; i < 2; i++ {
+		assetStats[i].SetContractID(contractID)
+		contractID[0]++
+	}
+	tt.Assert.NoError(q.InsertAssetStats(tt.Ctx, assetStats))
+	tt.Assert.NoError(q.Commit())
+
+	contractID[0] = 0
+	for i := 0; i < 2; i++ {
+		var assetStat ExpAssetStat
+		assetStat, err := q.GetAssetStatByContract(tt.Ctx, contractID)
+		tt.Assert.NoError(err)
+		tt.Assert.True(assetStat.Equals(assetStats[i]))
+		contractID[0]++
+	}
+
+	usd := assetStats[2]
+	usd.SetContractID([32]byte{})
+	_, err := q.UpdateAssetStat(tt.Ctx, usd)
+	tt.Assert.EqualError(err, "exec failed: pq: duplicate key value violates unique constraint \"exp_asset_stats_contract_id_key\"")
+
+	usd.SetContractID([32]byte{2})
+	rowsUpdated, err := q.UpdateAssetStat(tt.Ctx, usd)
+	tt.Assert.NoError(err)
+	tt.Assert.Equal(int64(1), rowsUpdated)
+
+	assetStats[2] = usd
+	contractID = [32]byte{}
+	for i := 0; i < 3; i++ {
+		var assetStat ExpAssetStat
+		assetStat, err = q.GetAssetStatByContract(tt.Ctx, contractID)
+		tt.Assert.NoError(err)
+		tt.Assert.True(assetStat.Equals(assetStats[i]))
+		contractID[0]++
+	}
+}
+
+func TestAssetContractStats(t *testing.T) {
+	tt := test.Start(t)
+	defer tt.Finish()
+	test.ResetHorizonDB(t, tt.HorizonDB)
+	q := &Q{tt.HorizonSession()}
+
+	tt.Assert.NoError(q.Begin(context.Background()))
+
+	c1 := ContractAssetStatRow{
+		ContractID: []byte{1},
+		Stat: ContractStat{
+			ActiveBalance:   "100",
+			ActiveHolders:   2,
+			ArchivedBalance: "0",
+			ArchivedHolders: 0,
+		},
+	}
+	c2 := ContractAssetStatRow{
+		ContractID: []byte{2},
+		Stat: ContractStat{
+			ActiveBalance:   "40",
+			ActiveHolders:   1,
+			ArchivedBalance: "0",
+			ArchivedHolders: 0,
+		},
+	}
+	c3 := ContractAssetStatRow{
+		ContractID: []byte{3},
+		Stat: ContractStat{
+			ActiveBalance:   "900",
+			ActiveHolders:   12,
+			ArchivedBalance: "23",
+			ArchivedHolders: 3,
+		},
+	}
+
+	rows := []ContractAssetStatRow{c1, c2, c3}
+	tt.Assert.NoError(q.InsertContractAssetStats(tt.Ctx, rows))
+
+	for _, row := range rows {
+		result, err := q.GetContractAssetStat(tt.Ctx, row.ContractID)
+		tt.Assert.NoError(err)
+		tt.Assert.Equal(result, row)
+	}
+
+	c2.Stat.ActiveHolders = 3
+	c2.Stat.ActiveBalance = "20"
+	c3.Stat.ArchivedBalance = "900"
+	c2.Stat.ActiveHolders = 5
+	numRows, err := q.UpdateContractAssetStat(tt.Ctx, c2)
+	tt.Assert.NoError(err)
+	tt.Assert.Equal(int64(1), numRows)
+	row, err := q.GetContractAssetStat(tt.Ctx, c2.ContractID)
+	tt.Assert.NoError(err)
+	tt.Assert.Equal(c2, row)
+
+	numRows, err = q.RemoveAssetContractStat(tt.Ctx, c3.ContractID)
+	tt.Assert.NoError(err)
+	tt.Assert.Equal(int64(1), numRows)
+
+	_, err = q.GetContractAssetStat(tt.Ctx, c3.ContractID)
+	tt.Assert.Equal(sql.ErrNoRows, err)
+
+	for _, row := range []ContractAssetStatRow{c1, c2} {
+		result, err := q.GetContractAssetStat(tt.Ctx, row.ContractID)
+		tt.Assert.NoError(err)
+		tt.Assert.Equal(result, row)
+	}
+
+	tt.Assert.NoError(q.Rollback())
+}
+
 func TestInsertAssetStats(t *testing.T) {
 	tt := test.Start(t)
 	defer tt.Finish()
 	test.ResetHorizonDB(t, tt.HorizonDB)
 	q := &Q{tt.HorizonSession()}
-	tt.Assert.NoError(q.InsertAssetStats(tt.Ctx, []ExpAssetStat{}, 1))
+
+	tt.Assert.NoError(q.Begin(context.Background()))
+
+	tt.Assert.NoError(q.InsertAssetStats(tt.Ctx, []ExpAssetStat{}))
 
 	assetStats := []ExpAssetStat{
 		{
@@ -33,8 +213,6 @@ func TestInsertAssetStats(t *testing.T) {
 				ClaimableBalances:               "4",
 				LiquidityPools:                  "5",
 			},
-			Amount:      "1",
-			NumAccounts: 2,
 		},
 		{
 			AssetType:   xdr.AssetTypeAssetTypeCreditAlphanum12,
@@ -52,17 +230,17 @@ func TestInsertAssetStats(t *testing.T) {
 				ClaimableBalances:               "4",
 				LiquidityPools:                  "5",
 			},
-			Amount:      "23",
-			NumAccounts: 1,
 		},
 	}
-	tt.Assert.NoError(q.InsertAssetStats(tt.Ctx, assetStats, 1))
+	tt.Assert.NoError(q.InsertAssetStats(tt.Ctx, assetStats))
 
 	for _, assetStat := range assetStats {
 		got, err := q.GetAssetStat(tt.Ctx, assetStat.AssetType, assetStat.AssetCode, assetStat.AssetIssuer)
 		tt.Assert.NoError(err)
 		tt.Assert.Equal(got, assetStat)
 	}
+
+	tt.Assert.NoError(q.Rollback())
 }
 
 func TestInsertAssetStat(t *testing.T) {
@@ -88,8 +266,6 @@ func TestInsertAssetStat(t *testing.T) {
 				ClaimableBalances:               "4",
 				LiquidityPools:                  "5",
 			},
-			Amount:      "1",
-			NumAccounts: 2,
 		},
 		{
 			AssetType:   xdr.AssetTypeAssetTypeCreditAlphanum12,
@@ -107,8 +283,6 @@ func TestInsertAssetStat(t *testing.T) {
 				ClaimableBalances:               "4",
 				LiquidityPools:                  "5",
 			},
-			Amount:      "23",
-			NumAccounts: 1,
 		},
 	}
 
@@ -145,8 +319,6 @@ func TestInsertAssetStatAlreadyExistsError(t *testing.T) {
 			ClaimableBalances:               "4",
 			LiquidityPools:                  "5",
 		},
-		Amount:      "1",
-		NumAccounts: 2,
 	}
 
 	numChanged, err := q.InsertAssetStat(tt.Ctx, assetStat)
@@ -156,18 +328,6 @@ func TestInsertAssetStatAlreadyExistsError(t *testing.T) {
 	numChanged, err = q.InsertAssetStat(tt.Ctx, assetStat)
 	tt.Assert.Error(err)
 	tt.Assert.Equal(numChanged, int64(0))
-
-	assetStat.NumAccounts = 4
-	assetStat.Amount = "3"
-	numChanged, err = q.InsertAssetStat(tt.Ctx, assetStat)
-	tt.Assert.Error(err)
-	tt.Assert.Equal(numChanged, int64(0))
-
-	assetStat.NumAccounts = 2
-	assetStat.Amount = "1"
-	got, err := q.GetAssetStat(tt.Ctx, assetStat.AssetType, assetStat.AssetCode, assetStat.AssetIssuer)
-	tt.Assert.NoError(err)
-	tt.Assert.Equal(got, assetStat)
 }
 
 func TestUpdateAssetStatDoesNotExistsError(t *testing.T) {
@@ -192,8 +352,6 @@ func TestUpdateAssetStatDoesNotExistsError(t *testing.T) {
 			ClaimableBalances:               "4",
 			LiquidityPools:                  "5",
 		},
-		Amount:      "1",
-		NumAccounts: 2,
 	}
 
 	numChanged, err := q.UpdateAssetStat(tt.Ctx, assetStat)
@@ -227,8 +385,6 @@ func TestUpdateStat(t *testing.T) {
 			ClaimableBalances:               "4",
 			LiquidityPools:                  "5",
 		},
-		Amount:      "1",
-		NumAccounts: 2,
 	}
 
 	numChanged, err := q.InsertAssetStat(tt.Ctx, assetStat)
@@ -239,8 +395,7 @@ func TestUpdateStat(t *testing.T) {
 	tt.Assert.NoError(err)
 	tt.Assert.Equal(got, assetStat)
 
-	assetStat.NumAccounts = 50
-	assetStat.Amount = "23"
+	assetStat.SetContractID([32]byte{23})
 
 	numChanged, err = q.UpdateAssetStat(tt.Ctx, assetStat)
 	tt.Assert.Nil(err)
@@ -248,7 +403,7 @@ func TestUpdateStat(t *testing.T) {
 
 	got, err = q.GetAssetStat(tt.Ctx, assetStat.AssetType, assetStat.AssetCode, assetStat.AssetIssuer)
 	tt.Assert.NoError(err)
-	tt.Assert.Equal(got, assetStat)
+	tt.Assert.True(got.Equals(assetStat))
 }
 
 func TestGetAssetStatDoesNotExist(t *testing.T) {
@@ -273,8 +428,6 @@ func TestGetAssetStatDoesNotExist(t *testing.T) {
 			ClaimableBalances:               "4",
 			LiquidityPools:                  "5",
 		},
-		Amount:      "1",
-		NumAccounts: 2,
 	}
 
 	_, err := q.GetAssetStat(tt.Ctx, assetStat.AssetType, assetStat.AssetCode, assetStat.AssetIssuer)
@@ -304,8 +457,6 @@ func TestRemoveAssetStat(t *testing.T) {
 			ClaimableBalances:               "4",
 			LiquidityPools:                  "5",
 		},
-		Amount:      "1",
-		NumAccounts: 2,
 	}
 
 	numChanged, err := q.RemoveAssetStat(tt.Ctx,
@@ -410,107 +561,137 @@ func TestGetAssetStatsOrderValidation(t *testing.T) {
 	tt.Assert.Contains(err.Error(), "invalid page order")
 }
 
-func reverseAssetStats(a []ExpAssetStat) {
-	for i := len(a)/2 - 1; i >= 0; i-- {
-		opp := len(a) - 1 - i
-		a[i], a[opp] = a[opp], a[i]
-	}
-}
-
 func TestGetAssetStatsFiltersAndCursor(t *testing.T) {
 	tt := test.Start(t)
 	defer tt.Finish()
 	test.ResetHorizonDB(t, tt.HorizonDB)
 
 	q := &Q{tt.HorizonSession()}
-
-	usdAssetStat := ExpAssetStat{
-		AssetType:   xdr.AssetTypeAssetTypeCreditAlphanum4,
-		AssetIssuer: "GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H",
-		AssetCode:   "USD",
-		Accounts: ExpAssetStatAccounts{
-			Authorized:                      2,
-			AuthorizedToMaintainLiabilities: 3,
-			Unauthorized:                    4,
-		},
-		Balances: ExpAssetStatBalances{
-			Authorized:                      "1",
-			AuthorizedToMaintainLiabilities: "2",
-			Unauthorized:                    "3",
-			ClaimableBalances:               "0",
-			LiquidityPools:                  "0",
-		},
-		Amount:      "1",
-		NumAccounts: 2,
+	zero := ContractStat{
+		ActiveBalance:   "0",
+		ActiveHolders:   0,
+		ArchivedBalance: "0",
+		ArchivedHolders: 0,
 	}
-	etherAssetStat := ExpAssetStat{
-		AssetType:   xdr.AssetTypeAssetTypeCreditAlphanum12,
-		AssetIssuer: "GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H",
-		AssetCode:   "ETHER",
-		Accounts: ExpAssetStatAccounts{
-			Authorized:                      1,
-			AuthorizedToMaintainLiabilities: 3,
-			Unauthorized:                    4,
+	usdAssetStat := AssetAndContractStat{
+		ExpAssetStat: ExpAssetStat{
+			AssetType:   xdr.AssetTypeAssetTypeCreditAlphanum4,
+			AssetIssuer: "GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H",
+			AssetCode:   "USD",
+			Accounts: ExpAssetStatAccounts{
+				Authorized:                      2,
+				AuthorizedToMaintainLiabilities: 3,
+				Unauthorized:                    4,
+			},
+			Balances: ExpAssetStatBalances{
+				Authorized:                      "1",
+				AuthorizedToMaintainLiabilities: "2",
+				Unauthorized:                    "3",
+				ClaimableBalances:               "0",
+				LiquidityPools:                  "0",
+			},
 		},
-		Balances: ExpAssetStatBalances{
-			Authorized:                      "23",
-			AuthorizedToMaintainLiabilities: "2",
-			Unauthorized:                    "3",
-			ClaimableBalances:               "0",
-			LiquidityPools:                  "0",
-		},
-		Amount:      "23",
-		NumAccounts: 1,
+		Contracts: zero,
 	}
-	otherUSDAssetStat := ExpAssetStat{
-		AssetType:   xdr.AssetTypeAssetTypeCreditAlphanum4,
-		AssetIssuer: "GA5WBPYA5Y4WAEHXWR2UKO2UO4BUGHUQ74EUPKON2QHV4WRHOIRNKKH2",
-		AssetCode:   "USD",
-		Accounts: ExpAssetStatAccounts{
-			Authorized:                      2,
-			AuthorizedToMaintainLiabilities: 3,
-			Unauthorized:                    4,
+	etherAssetStat := AssetAndContractStat{
+		ExpAssetStat: ExpAssetStat{
+			AssetType:   xdr.AssetTypeAssetTypeCreditAlphanum12,
+			AssetIssuer: "GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H",
+			AssetCode:   "ETHER",
+			Accounts: ExpAssetStatAccounts{
+				Authorized:                      1,
+				AuthorizedToMaintainLiabilities: 3,
+				Unauthorized:                    4,
+			},
+			Balances: ExpAssetStatBalances{
+				Authorized:                      "23",
+				AuthorizedToMaintainLiabilities: "2",
+				Unauthorized:                    "3",
+				ClaimableBalances:               "0",
+				LiquidityPools:                  "0",
+			},
 		},
-		Balances: ExpAssetStatBalances{
-			Authorized:                      "1",
-			AuthorizedToMaintainLiabilities: "2",
-			Unauthorized:                    "3",
-			ClaimableBalances:               "0",
-			LiquidityPools:                  "0",
-		},
-		Amount:      "1",
-		NumAccounts: 2,
+		Contracts: zero,
 	}
-	eurAssetStat := ExpAssetStat{
-		AssetType:   xdr.AssetTypeAssetTypeCreditAlphanum4,
-		AssetIssuer: "GA5WBPYA5Y4WAEHXWR2UKO2UO4BUGHUQ74EUPKON2QHV4WRHOIRNKKH2",
-		AssetCode:   "EUR",
-		Accounts: ExpAssetStatAccounts{
-			Authorized:                      3,
-			AuthorizedToMaintainLiabilities: 2,
-			Unauthorized:                    4,
+	otherUSDAssetStat := AssetAndContractStat{
+		ExpAssetStat: ExpAssetStat{
+			AssetType:   xdr.AssetTypeAssetTypeCreditAlphanum4,
+			AssetIssuer: "GA5WBPYA5Y4WAEHXWR2UKO2UO4BUGHUQ74EUPKON2QHV4WRHOIRNKKH2",
+			AssetCode:   "USD",
+			Accounts: ExpAssetStatAccounts{
+				Authorized:                      2,
+				AuthorizedToMaintainLiabilities: 3,
+				Unauthorized:                    4,
+			},
+			Balances: ExpAssetStatBalances{
+				Authorized:                      "1",
+				AuthorizedToMaintainLiabilities: "2",
+				Unauthorized:                    "3",
+				ClaimableBalances:               "0",
+				LiquidityPools:                  "0",
+			},
 		},
-		Balances: ExpAssetStatBalances{
-			Authorized:                      "111",
-			AuthorizedToMaintainLiabilities: "2",
-			Unauthorized:                    "3",
-			ClaimableBalances:               "1",
-			LiquidityPools:                  "2",
-		},
-		Amount:      "111",
-		NumAccounts: 3,
+		Contracts: zero,
 	}
-	assetStats := []ExpAssetStat{
+	eurAssetStat := AssetAndContractStat{
+		ExpAssetStat: ExpAssetStat{
+			AssetType:   xdr.AssetTypeAssetTypeCreditAlphanum4,
+			AssetIssuer: "GA5WBPYA5Y4WAEHXWR2UKO2UO4BUGHUQ74EUPKON2QHV4WRHOIRNKKH2",
+			AssetCode:   "EUR",
+			Accounts: ExpAssetStatAccounts{
+				Authorized:                      3,
+				AuthorizedToMaintainLiabilities: 2,
+				Unauthorized:                    4,
+			},
+			Balances: ExpAssetStatBalances{
+				Authorized:                      "111",
+				AuthorizedToMaintainLiabilities: "2",
+				Unauthorized:                    "3",
+				ClaimableBalances:               "1",
+				LiquidityPools:                  "2",
+			},
+		},
+		Contracts: ContractStat{
+			ActiveBalance:   "120",
+			ActiveHolders:   3,
+			ArchivedBalance: "90",
+			ArchivedHolders: 1,
+		},
+	}
+	eurAssetStat.SetContractID([32]byte{})
+	assetStats := []AssetAndContractStat{
 		etherAssetStat,
 		eurAssetStat,
 		otherUSDAssetStat,
 		usdAssetStat,
 	}
 	for _, assetStat := range assetStats {
-		numChanged, err := q.InsertAssetStat(tt.Ctx, assetStat)
+		numChanged, err := q.InsertAssetStat(tt.Ctx, assetStat.ExpAssetStat)
 		tt.Assert.NoError(err)
 		tt.Assert.Equal(numChanged, int64(1))
+		if assetStat.Contracts != zero {
+			numChanged, err = q.InsertContractAssetStat(tt.Ctx, ContractAssetStatRow{
+				ContractID: *assetStat.ContractID,
+				Stat:       assetStat.Contracts,
+			})
+			tt.Assert.NoError(err)
+			tt.Assert.Equal(numChanged, int64(1))
+		}
 	}
+
+	// insert contract stat which has no corresponding asset stat row
+	// to test that it isn't included in the results
+	numChanged, err := q.InsertContractAssetStat(tt.Ctx, ContractAssetStatRow{
+		ContractID: []byte{1},
+		Stat: ContractStat{
+			ActiveBalance:   "400",
+			ActiveHolders:   30,
+			ArchivedBalance: "0",
+			ArchivedHolders: 0,
+		},
+	})
+	tt.Assert.NoError(err)
+	tt.Assert.Equal(numChanged, int64(1))
 
 	for _, testCase := range []struct {
 		name        string
@@ -518,7 +699,7 @@ func TestGetAssetStatsFiltersAndCursor(t *testing.T) {
 		assetIssuer string
 		cursor      string
 		order       string
-		expected    []ExpAssetStat
+		expected    []AssetAndContractStat
 	}{
 		{
 			"no filter without cursor",
@@ -526,7 +707,7 @@ func TestGetAssetStatsFiltersAndCursor(t *testing.T) {
 			"",
 			"",
 			"asc",
-			[]ExpAssetStat{
+			[]AssetAndContractStat{
 				etherAssetStat,
 				eurAssetStat,
 				otherUSDAssetStat,
@@ -539,7 +720,7 @@ func TestGetAssetStatsFiltersAndCursor(t *testing.T) {
 			"",
 			"ABC_GA5WBPYA5Y4WAEHXWR2UKO2UO4BUGHUQ74EUPKON2QHV4WRHOIRNKKH2_credit_alphanum4",
 			"asc",
-			[]ExpAssetStat{
+			[]AssetAndContractStat{
 				etherAssetStat,
 				eurAssetStat,
 				otherUSDAssetStat,
@@ -552,7 +733,7 @@ func TestGetAssetStatsFiltersAndCursor(t *testing.T) {
 			"",
 			"ZZZ_GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H_credit_alphanum4",
 			"desc",
-			[]ExpAssetStat{
+			[]AssetAndContractStat{
 				usdAssetStat,
 				otherUSDAssetStat,
 				eurAssetStat,
@@ -565,7 +746,7 @@ func TestGetAssetStatsFiltersAndCursor(t *testing.T) {
 			"",
 			"ETHER_GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H_credit_alphanum12",
 			"asc",
-			[]ExpAssetStat{
+			[]AssetAndContractStat{
 				eurAssetStat,
 				otherUSDAssetStat,
 				usdAssetStat,
@@ -577,7 +758,7 @@ func TestGetAssetStatsFiltersAndCursor(t *testing.T) {
 			"",
 			"EUR_GA5WBPYA5Y4WAEHXWR2UKO2UO4BUGHUQ74EUPKON2QHV4WRHOIRNKKH2_credit_alphanum4",
 			"desc",
-			[]ExpAssetStat{
+			[]AssetAndContractStat{
 				etherAssetStat,
 			},
 		},
@@ -587,7 +768,7 @@ func TestGetAssetStatsFiltersAndCursor(t *testing.T) {
 			"",
 			"EUR_GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H_credit_alphanum4",
 			"desc",
-			[]ExpAssetStat{
+			[]AssetAndContractStat{
 				eurAssetStat,
 				etherAssetStat,
 			},
@@ -598,7 +779,7 @@ func TestGetAssetStatsFiltersAndCursor(t *testing.T) {
 			"",
 			"",
 			"asc",
-			[]ExpAssetStat{
+			[]AssetAndContractStat{
 				otherUSDAssetStat,
 				usdAssetStat,
 			},
@@ -609,7 +790,7 @@ func TestGetAssetStatsFiltersAndCursor(t *testing.T) {
 			"",
 			"USD_GA5WBPYA5Y4WAEHXWR2UKO2UO4BUGHUQ74EUPKON2QHV4WRHOIRNKKH2_credit_alphanum4",
 			"asc",
-			[]ExpAssetStat{
+			[]AssetAndContractStat{
 				usdAssetStat,
 			},
 		},
@@ -619,7 +800,7 @@ func TestGetAssetStatsFiltersAndCursor(t *testing.T) {
 			"",
 			"USD_GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H_credit_alphanum4",
 			"desc",
-			[]ExpAssetStat{
+			[]AssetAndContractStat{
 				otherUSDAssetStat,
 			},
 		},
@@ -629,7 +810,7 @@ func TestGetAssetStatsFiltersAndCursor(t *testing.T) {
 			"GA5WBPYA5Y4WAEHXWR2UKO2UO4BUGHUQ74EUPKON2QHV4WRHOIRNKKH2",
 			"",
 			"asc",
-			[]ExpAssetStat{
+			[]AssetAndContractStat{
 				eurAssetStat,
 				otherUSDAssetStat,
 			},
@@ -640,7 +821,7 @@ func TestGetAssetStatsFiltersAndCursor(t *testing.T) {
 			"GA5WBPYA5Y4WAEHXWR2UKO2UO4BUGHUQ74EUPKON2QHV4WRHOIRNKKH2",
 			"EUR_GA5WBPYA5Y4WAEHXWR2UKO2UO4BUGHUQ74EUPKON2QHV4WRHOIRNKKH2_credit_alphanum4",
 			"asc",
-			[]ExpAssetStat{
+			[]AssetAndContractStat{
 				otherUSDAssetStat,
 			},
 		},
@@ -650,7 +831,7 @@ func TestGetAssetStatsFiltersAndCursor(t *testing.T) {
 			"GA5WBPYA5Y4WAEHXWR2UKO2UO4BUGHUQ74EUPKON2QHV4WRHOIRNKKH2",
 			"USD_GA5WBPYA5Y4WAEHXWR2UKO2UO4BUGHUQ74EUPKON2QHV4WRHOIRNKKH2_credit_alphanum4",
 			"desc",
-			[]ExpAssetStat{
+			[]AssetAndContractStat{
 				eurAssetStat,
 			},
 		},
@@ -708,7 +889,7 @@ func TestGetAssetStatsFiltersAndCursor(t *testing.T) {
 			"GA5WBPYA5Y4WAEHXWR2UKO2UO4BUGHUQ74EUPKON2QHV4WRHOIRNKKH2",
 			"",
 			"asc",
-			[]ExpAssetStat{
+			[]AssetAndContractStat{
 				otherUSDAssetStat,
 			},
 		},
@@ -718,7 +899,7 @@ func TestGetAssetStatsFiltersAndCursor(t *testing.T) {
 			"GA5WBPYA5Y4WAEHXWR2UKO2UO4BUGHUQ74EUPKON2QHV4WRHOIRNKKH2",
 			"USC_GA5WBPYA5Y4WAEHXWR2UKO2UO4BUGHUQ74EUPKON2QHV4WRHOIRNKKH2_credit_alphanum4",
 			"asc",
-			[]ExpAssetStat{
+			[]AssetAndContractStat{
 				otherUSDAssetStat,
 			},
 		},
@@ -728,7 +909,7 @@ func TestGetAssetStatsFiltersAndCursor(t *testing.T) {
 			"GA5WBPYA5Y4WAEHXWR2UKO2UO4BUGHUQ74EUPKON2QHV4WRHOIRNKKH2",
 			"USE_GA5WBPYA5Y4WAEHXWR2UKO2UO4BUGHUQ74EUPKON2QHV4WRHOIRNKKH2_credit_alphanum4",
 			"desc",
-			[]ExpAssetStat{
+			[]AssetAndContractStat{
 				otherUSDAssetStat,
 			},
 		},
@@ -766,9 +947,231 @@ func TestGetAssetStatsFiltersAndCursor(t *testing.T) {
 
 				results, err = q.GetAssetStats(tt.Ctx, testCase.assetCode, testCase.assetIssuer, page)
 				tt.Assert.NoError(err)
-				reverseAssetStats(results)
+				slices.Reverse(results)
 				tt.Assert.Equal(testCase.expected, results)
 			}
 		})
 	}
+}
+
+func assertContractAssetBalancesEqual(t *testing.T, balances, otherBalances []ContractAssetBalance) {
+	assert.Equal(t, len(balances), len(otherBalances))
+
+	sort.Slice(balances, func(i, j int) bool {
+		return bytes.Compare(balances[i].KeyHash, balances[j].KeyHash) < 0
+	})
+	sort.Slice(otherBalances, func(i, j int) bool {
+		return bytes.Compare(otherBalances[i].KeyHash, otherBalances[j].KeyHash) < 0
+	})
+
+	for i, balance := range balances {
+		other := otherBalances[i]
+		assert.Equal(t, balance, other)
+	}
+}
+
+func TestInsertContractAssetBalances(t *testing.T) {
+	tt := test.Start(t)
+	defer tt.Finish()
+	test.ResetHorizonDB(t, tt.HorizonDB)
+
+	q := &Q{tt.HorizonSession()}
+
+	tt.Assert.NoError(q.Begin(context.Background()))
+
+	keyHash := [32]byte{}
+	contractID := [32]byte{1}
+	balance := ContractAssetBalance{
+		KeyHash:          keyHash[:],
+		ContractID:       contractID[:],
+		Amount:           "100",
+		ExpirationLedger: 10,
+	}
+
+	otherKeyHash := [32]byte{2}
+	otherContractID := [32]byte{3}
+	otherBalance := ContractAssetBalance{
+		KeyHash:          otherKeyHash[:],
+		ContractID:       otherContractID[:],
+		Amount:           "101",
+		ExpirationLedger: 11,
+	}
+
+	tt.Assert.NoError(
+		q.InsertContractAssetBalances(context.Background(), []ContractAssetBalance{balance, otherBalance}),
+	)
+
+	nonExistantKeyHash := [32]byte{4}
+	balances, err := q.GetContractAssetBalances(context.Background(), []xdr.Hash{keyHash, otherKeyHash, nonExistantKeyHash})
+	tt.Assert.NoError(err)
+
+	assertContractAssetBalancesEqual(t, balances, []ContractAssetBalance{balance, otherBalance})
+
+	tt.Assert.NoError(q.Rollback())
+}
+
+func TestRemoveContractAssetBalances(t *testing.T) {
+	tt := test.Start(t)
+	defer tt.Finish()
+	test.ResetHorizonDB(t, tt.HorizonDB)
+
+	q := &Q{tt.HorizonSession()}
+	tt.Assert.NoError(q.Begin(context.Background()))
+
+	keyHash := [32]byte{}
+	contractID := [32]byte{1}
+	balance := ContractAssetBalance{
+		KeyHash:          keyHash[:],
+		ContractID:       contractID[:],
+		Amount:           "100",
+		ExpirationLedger: 10,
+	}
+
+	otherKeyHash := [32]byte{2}
+	otherContractID := [32]byte{3}
+	otherBalance := ContractAssetBalance{
+		KeyHash:          otherKeyHash[:],
+		ContractID:       otherContractID[:],
+		Amount:           "101",
+		ExpirationLedger: 11,
+	}
+
+	tt.Assert.NoError(
+		q.InsertContractAssetBalances(context.Background(), []ContractAssetBalance{balance, otherBalance}),
+	)
+	nonExistantKeyHash := xdr.Hash{4}
+
+	tt.Assert.NoError(
+		q.RemoveContractAssetBalances(context.Background(), []xdr.Hash{nonExistantKeyHash}),
+	)
+	balances, err := q.GetContractAssetBalances(context.Background(), []xdr.Hash{keyHash, otherKeyHash, nonExistantKeyHash})
+	tt.Assert.NoError(err)
+
+	assertContractAssetBalancesEqual(t, balances, []ContractAssetBalance{balance, otherBalance})
+
+	tt.Assert.NoError(
+		q.RemoveContractAssetBalances(context.Background(), []xdr.Hash{nonExistantKeyHash, otherKeyHash}),
+	)
+
+	balances, err = q.GetContractAssetBalances(context.Background(), []xdr.Hash{keyHash, otherKeyHash, nonExistantKeyHash})
+	tt.Assert.NoError(err)
+
+	assertContractAssetBalancesEqual(t, balances, []ContractAssetBalance{balance})
+
+	tt.Assert.NoError(q.Rollback())
+}
+
+func TestUpdateContractAssetBalanceAmounts(t *testing.T) {
+	tt := test.Start(t)
+	defer tt.Finish()
+	test.ResetHorizonDB(t, tt.HorizonDB)
+
+	q := &Q{tt.HorizonSession()}
+	tt.Assert.NoError(q.Begin(context.Background()))
+
+	keyHash := [32]byte{}
+	contractID := [32]byte{1}
+	balance := ContractAssetBalance{
+		KeyHash:          keyHash[:],
+		ContractID:       contractID[:],
+		Amount:           "100",
+		ExpirationLedger: 10,
+	}
+
+	otherKeyHash := [32]byte{2}
+	otherContractID := [32]byte{3}
+	otherBalance := ContractAssetBalance{
+		KeyHash:          otherKeyHash[:],
+		ContractID:       otherContractID[:],
+		Amount:           "101",
+		ExpirationLedger: 11,
+	}
+
+	tt.Assert.NoError(
+		q.InsertContractAssetBalances(context.Background(), []ContractAssetBalance{balance, otherBalance}),
+	)
+
+	nonExistantKeyHash := xdr.Hash{4}
+
+	tt.Assert.NoError(
+		q.UpdateContractAssetBalanceAmounts(
+			context.Background(),
+			[]xdr.Hash{otherKeyHash, keyHash, nonExistantKeyHash},
+			[]string{"1", "2", "3"},
+		),
+	)
+
+	balances, err := q.GetContractAssetBalances(context.Background(), []xdr.Hash{keyHash, otherKeyHash})
+	tt.Assert.NoError(err)
+
+	balance.Amount = "2"
+	otherBalance.Amount = "1"
+	assertContractAssetBalancesEqual(t, balances, []ContractAssetBalance{balance, otherBalance})
+
+	tt.Assert.NoError(q.Rollback())
+}
+
+func TestUpdateContractAssetBalanceExpirations(t *testing.T) {
+	tt := test.Start(t)
+	defer tt.Finish()
+	test.ResetHorizonDB(t, tt.HorizonDB)
+
+	q := &Q{tt.HorizonSession()}
+	tt.Assert.NoError(q.Begin(context.Background()))
+
+	keyHash := [32]byte{}
+	contractID := [32]byte{1}
+	balance := ContractAssetBalance{
+		KeyHash:          keyHash[:],
+		ContractID:       contractID[:],
+		Amount:           "100",
+		ExpirationLedger: 10,
+	}
+
+	otherKeyHash := [32]byte{2}
+	otherContractID := [32]byte{3}
+	otherBalance := ContractAssetBalance{
+		KeyHash:          otherKeyHash[:],
+		ContractID:       otherContractID[:],
+		Amount:           "101",
+		ExpirationLedger: 11,
+	}
+
+	tt.Assert.NoError(
+		q.InsertContractAssetBalances(context.Background(), []ContractAssetBalance{balance, otherBalance}),
+	)
+
+	balances, err := q.GetContractAssetBalancesExpiringAt(context.Background(), 10)
+	tt.Assert.NoError(err)
+	assertContractAssetBalancesEqual(t, balances, []ContractAssetBalance{balance})
+
+	balances, err = q.GetContractAssetBalancesExpiringAt(context.Background(), 11)
+	tt.Assert.NoError(err)
+	assertContractAssetBalancesEqual(t, balances, []ContractAssetBalance{otherBalance})
+
+	nonExistantKeyHash := xdr.Hash{4}
+
+	tt.Assert.NoError(
+		q.UpdateContractAssetBalanceExpirations(
+			context.Background(),
+			[]xdr.Hash{otherKeyHash, keyHash, nonExistantKeyHash},
+			[]uint32{200, 200, 500},
+		),
+	)
+
+	balances, err = q.GetContractAssetBalances(context.Background(), []xdr.Hash{keyHash, otherKeyHash})
+	tt.Assert.NoError(err)
+	balance.ExpirationLedger = 200
+	otherBalance.ExpirationLedger = 200
+	assertContractAssetBalancesEqual(t, balances, []ContractAssetBalance{balance, otherBalance})
+
+	balances, err = q.GetContractAssetBalancesExpiringAt(context.Background(), 10)
+	tt.Assert.NoError(err)
+	assert.Empty(t, balances)
+
+	balances, err = q.GetContractAssetBalancesExpiringAt(context.Background(), 200)
+	tt.Assert.NoError(err)
+	assertContractAssetBalancesEqual(t, balances, []ContractAssetBalance{balance, otherBalance})
+
+	tt.Assert.NoError(q.Rollback())
 }

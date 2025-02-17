@@ -3,6 +3,7 @@ package horizonclient
 import (
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -479,8 +480,6 @@ func TestAssetsRequest(t *testing.T) {
 		assert.Equal(t, record.Asset.Code, "ABC")
 		assert.Equal(t, record.Asset.Issuer, "GCLWGQPMKXQSPF776IU33AH4PZNOOWNAWGGKVTBQMIC5IMKUNP3E6NVU")
 		assert.Equal(t, record.PT, "1")
-		assert.Equal(t, record.NumAccounts, int32(3))
-		assert.Equal(t, record.Amount, "105.0000000")
 		assert.Equal(t, record.Flags.AuthRevocable, false)
 		assert.Equal(t, record.Flags.AuthRequired, true)
 		assert.Equal(t, record.Flags.AuthImmutable, false)
@@ -904,6 +903,25 @@ func TestSubmitTransactionRequest(t *testing.T) {
 
 	_, err = client.SubmitTransaction(tx)
 	assert.NoError(t, err)
+
+	// verify submit parses correctly when result_meta_xdr absent when skip_meta=true
+	hmock.On(
+		"POST",
+		"https://localhost/transactions",
+	).Return(func(request *http.Request) (*http.Response, error) {
+		val := request.FormValue("tx")
+		assert.Equal(t, val, txXdr)
+		return httpmock.NewStringResponse(http.StatusOK, strings.Replace(txDetailResponse, "<result_meta_xdr>", "", 1)), nil
+	})
+
+	hmock.On(
+		"GET",
+		"https://localhost/accounts/GACTJ4ZFCDZMD2UFR4R7MZOWYBCF6HBP65YKCUT37MUQFPJLDLJ3N5D2/data/config.memo_required",
+	).ReturnString(404, notFoundResponse)
+
+	theTx, err := client.SubmitTransaction(tx)
+	assert.NoError(t, err)
+	assert.Empty(t, theTx.ResultMetaXdr)
 
 	// memo required - does not submit transaction
 	hmock.On(
@@ -1388,7 +1406,7 @@ func TestTransactionsRequest(t *testing.T) {
 	hmock.On(
 		"GET",
 		"https://localhost/transactions/5131aed266a639a6eb4802a92fba310454e711ded830ed899745b9e777d7110c",
-	).ReturnString(200, txDetailResponse)
+	).ReturnString(200, strings.Replace(txDetailResponse, "<result_meta_xdr>", "result_meta_xdr: AAAAAQAAAAIAAAADAAavdgAAAAAAAAAAtoYrQZHbnPLAFsF4YB88J5VSg0/piQNHm0SL9l0HW1EAAAAXSHbnnAAGr3UAAAAAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAABAAavdgAAAAAAAAAAtoYrQZHbnPLAFsF4YB88J5VSg0/piQNHm0SL9l0HW1EAAAAXSHbnnAAGr3UAAAABAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAABAAAABAAAAAMABq9zAAAAAAAAAADMSEvcRKXsaUNna++Hy7gWm/CfqTjEA7xoGypfrFGUHAAAAAUQ/z+cAABeBgAASuQAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAEABq92AAAAAAAAAADMSEvcRKXsaUNna++Hy7gWm/CfqTjEA7xoGypfrFGUHAAAAAcXjracAABeBgAASuQAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAMABq92AAAAAAAAAAC2hitBkduc8sAWwXhgHzwnlVKDT+mJA0ebRIv2XQdbUQAAABdIduecAAavdQAAAAEAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAEABq92AAAAAAAAAAC2hitBkduc8sAWwXhgHzwnlVKDT+mJA0ebRIv2XQdbUQAAABVB53CcAAavdQAAAAEAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAA==", 1))
 
 	record, err := client.TransactionDetail(txHash)
 	if assert.NoError(t, err) {
@@ -1396,6 +1414,17 @@ func TestTransactionsRequest(t *testing.T) {
 		assert.Equal(t, record.Successful, true)
 		assert.Equal(t, record.Hash, "5131aed266a639a6eb4802a92fba310454e711ded830ed899745b9e777d7110c")
 		assert.Equal(t, record.Memo, "2A1V6J5703G47XHY")
+	}
+
+	// transaction detail when skip meta enabled and result_meta_xdr is absent
+	hmock.On(
+		"GET",
+		"https://localhost/transactions/5131aed266a639a6eb4802a92fba310454e711ded830ed899745b9e777d7110c",
+	).ReturnString(200, strings.Replace(txDetailResponse, "<result_meta_xdr>", "", 1))
+
+	record, err = client.TransactionDetail(txHash)
+	if assert.NoError(t, err) {
+		assert.Empty(t, record.ResultMetaXdr)
 	}
 }
 
@@ -2492,7 +2521,7 @@ var txDetailResponse = `{
   "operation_count": 1,
   "envelope_xdr": "AAAAALaGK0GR25zywBbBeGAfPCeVUoNP6YkDR5tEi/ZdB1tRAAAAZAAGr3UAAAABAAAAAAAAAAEAAAAQMkExVjZKNTcwM0c0N1hIWQAAAAEAAAABAAAAALaGK0GR25zywBbBeGAfPCeVUoNP6YkDR5tEi/ZdB1tRAAAAAQAAAADMSEvcRKXsaUNna++Hy7gWm/CfqTjEA7xoGypfrFGUHAAAAAAAAAACBo93AAAAAAAAAAABXQdbUQAAAECQ5m6ZHsv8/Gd/aRJ2EMLurJMxFynT7KbD51T7gD91Gqp/fzsRHilSGoVSw5ztmtJb2LP7o3bQbiZynQiJPl8C",
   "result_xdr": "AAAAAAAAAGQAAAAAAAAAAQAAAAAAAAABAAAAAAAAAAA=",
-  "result_meta_xdr": "AAAAAQAAAAIAAAADAAavdgAAAAAAAAAAtoYrQZHbnPLAFsF4YB88J5VSg0/piQNHm0SL9l0HW1EAAAAXSHbnnAAGr3UAAAAAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAABAAavdgAAAAAAAAAAtoYrQZHbnPLAFsF4YB88J5VSg0/piQNHm0SL9l0HW1EAAAAXSHbnnAAGr3UAAAABAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAABAAAABAAAAAMABq9zAAAAAAAAAADMSEvcRKXsaUNna++Hy7gWm/CfqTjEA7xoGypfrFGUHAAAAAUQ/z+cAABeBgAASuQAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAEABq92AAAAAAAAAADMSEvcRKXsaUNna++Hy7gWm/CfqTjEA7xoGypfrFGUHAAAAAcXjracAABeBgAASuQAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAMABq92AAAAAAAAAAC2hitBkduc8sAWwXhgHzwnlVKDT+mJA0ebRIv2XQdbUQAAABdIduecAAavdQAAAAEAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAEABq92AAAAAAAAAAC2hitBkduc8sAWwXhgHzwnlVKDT+mJA0ebRIv2XQdbUQAAABVB53CcAAavdQAAAAEAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAA==",
+  "result_meta_xdr": "<result_meta_xdr>",
   "fee_meta_xdr": "AAAAAgAAAAMABq91AAAAAAAAAAC2hitBkduc8sAWwXhgHzwnlVKDT+mJA0ebRIv2XQdbUQAAABdIdugAAAavdQAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAEABq92AAAAAAAAAAC2hitBkduc8sAWwXhgHzwnlVKDT+mJA0ebRIv2XQdbUQAAABdIduecAAavdQAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAA==",
   "memo_type": "text",
   "signatures": [

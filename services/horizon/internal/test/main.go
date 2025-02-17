@@ -25,11 +25,12 @@ type StaticMockServer struct {
 
 // T provides a common set of functionality for each test in horizon
 type T struct {
-	T          *testing.T
-	Assert     *assert.Assertions
-	Require    *require.Assertions
-	Ctx        context.Context
-	HorizonDB  *sqlx.DB
+	T         *testing.T
+	Assert    *assert.Assertions
+	Require   *require.Assertions
+	Ctx       context.Context
+	HorizonDB *sqlx.DB
+	//TODO - remove ref to core db once scenario tests are removed.
 	CoreDB     *sqlx.DB
 	EndLogTest func() []logrus.Entry
 }

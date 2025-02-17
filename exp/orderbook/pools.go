@@ -4,6 +4,7 @@ import (
 	"math"
 
 	"github.com/holiman/uint256"
+
 	"github.com/stellar/go/support/errors"
 	"github.com/stellar/go/xdr"
 )
@@ -20,6 +21,7 @@ import (
 const (
 	tradeTypeDeposit     = iota // deposit into pool, what's the payout?
 	tradeTypeExpectation = iota // expect payout, what to deposit?
+	maxBasisPoints       = 10_000
 )
 
 var (
@@ -91,6 +93,9 @@ func makeTrade(
 //
 // It returns false if the calculation overflows.
 func CalculatePoolPayout(reserveA, reserveB, received xdr.Int64, feeBips xdr.Int32, calculateRoundingSlippage bool) (xdr.Int64, xdr.Int64, bool) {
+	if feeBips < 0 || feeBips >= maxBasisPoints {
+		return 0, 0, false
+	}
 	X, Y := uint256.NewInt(uint64(reserveA)), uint256.NewInt(uint64(reserveB))
 	F, x := uint256.NewInt(uint64(feeBips)), uint256.NewInt(uint64(received))
 
@@ -101,7 +106,7 @@ func CalculatePoolPayout(reserveA, reserveB, received xdr.Int64, feeBips xdr.Int
 
 	// We do all of the math with 4 extra decimal places of precision, so it's
 	// all upscaled by this value.
-	maxBips := uint256.NewInt(10000)
+	maxBips := uint256.NewInt(maxBasisPoints)
 	f := new(uint256.Int).Sub(maxBips, F) // upscaled 1 - F
 
 	// right half: X + (1 - F)x
@@ -153,7 +158,7 @@ func CalculatePoolPayout(reserveA, reserveB, received xdr.Int64, feeBips xdr.Int
 	}
 
 	val := xdr.Int64(result.Uint64())
-	ok = ok && result.IsUint64() && val >= 0
+	ok = ok && result.IsUint64() && val > 0
 	return val, roundingSlippageBips, ok
 }
 
@@ -166,6 +171,9 @@ func CalculatePoolPayout(reserveA, reserveB, received xdr.Int64, feeBips xdr.Int
 func CalculatePoolExpectation(
 	reserveA, reserveB, disbursed xdr.Int64, feeBips xdr.Int32, calculateRoundingSlippage bool,
 ) (xdr.Int64, xdr.Int64, bool) {
+	if feeBips < 0 || feeBips >= maxBasisPoints {
+		return 0, 0, false
+	}
 	X, Y := uint256.NewInt(uint64(reserveA)), uint256.NewInt(uint64(reserveB))
 	F, y := uint256.NewInt(uint64(feeBips)), uint256.NewInt(uint64(disbursed))
 
@@ -176,7 +184,7 @@ func CalculatePoolExpectation(
 
 	// We do all of the math with 4 extra decimal places of precision, so it's
 	// all upscaled by this value.
-	maxBips := uint256.NewInt(10_000)
+	maxBips := uint256.NewInt(maxBasisPoints)
 	f := new(uint256.Int).Sub(maxBips, F) // upscaled 1 - F
 
 	denom := Y.Sub(Y, y).Mul(Y, f) // right half: (Y - y)(1 - F)
@@ -231,7 +239,11 @@ func CalculatePoolExpectation(
 	}
 
 	val := xdr.Int64(result.Uint64())
-	ok = ok && result.IsUint64() && val >= 0
+	ok = ok &&
+		result.IsUint64() &&
+		val >= 0 &&
+		// check that the calculated deposit would not overflow the reserve
+		val <= math.MaxInt64-reserveA
 	return val, roundingSlippageBips, ok
 }
 

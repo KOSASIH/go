@@ -6,16 +6,14 @@ on:
   pull_request:
 
 jobs:
-
   integration:
     name: Integration tests
     strategy:
       matrix:
-        os: [ubuntu-20.04]
-        go: [1.19.6, 1.20.1]
-        pg: [9.6.5]
-        ingestion-backend: [db, captive-core, captive-core-remote-storage]
-        protocol-version: [18, 19]
+        os: [ubuntu-20.04, ubuntu-22.04]
+        go: ["1.22", "1.23"]
+        pg: [12, 16]
+        protocol-version: [22]
     runs-on: ${{ matrix.os }}
     services:
       postgres:
@@ -30,108 +28,124 @@ jobs:
           --health-timeout 5s
           --health-retries 5
         ports:
-        - 5432:5432
+          - 5432:5432
     env:
       HORIZON_INTEGRATION_TESTS_ENABLED: true
       HORIZON_INTEGRATION_TESTS_CORE_MAX_SUPPORTED_PROTOCOL: ${{ matrix.protocol-version }}
-      PROTOCOL_19_CORE_DEBIAN_PKG_VERSION: 19.8.0-1227.040a29c51.focal
-      PROTOCOL_19_CORE_DOCKER_IMG: stellar/stellar-core:19.8.0-1227.040a29c51.focal
-      PROTOCOL_18_CORE_DEBIAN_PKG_VERSION: 19.8.0-1227.040a29c51.focal
-      PROTOCOL_18_CORE_DOCKER_IMG: stellar/stellar-core:19.8.0-1227.040a29c51.focal
+      HORIZON_INTEGRATION_TESTS_CAPTIVE_CORE_USE_DB: true
+      PROTOCOL_22_CORE_DEBIAN_PKG_VERSION: 22.1.0-2194.0241e79f7.focal
+      PROTOCOL_22_CORE_DOCKER_IMG: stellar/stellar-core:22.1.0-2194.0241e79f7.focal
+      PROTOCOL_22_STELLAR_RPC_DOCKER_IMG: stellar/stellar-rpc:22.1.2
       PGHOST: localhost
       PGPORT: 5432
       PGUSER: postgres
       PGPASSWORD: postgres
       PGDATABASE: postgres
     steps:
-    - uses: actions/checkout@v3
-      with:
-        # For pull requests, build and test the PR head not a merge of the PR with the destination.
-        ref: ${{ github.event.pull_request.head.sha || github.ref }}
-        # We need to full history for git-restore-mtime to know what modification dates to use.
-        # Otherwise, the Go test cache will fail (due to the modification time of fixtures changing).
-        fetch-depth: '0'
+      - uses: actions/checkout@v3
+        with:
+          # For pull requests, build and test the PR head not a merge of the PR with the destination.
+          ref: ${{ github.event.pull_request.head.sha || github.ref }}
+          # We need to full history for git-restore-mtime to know what modification dates to use.
+          # Otherwise, the Go test cache will fail (due to the modification time of fixtures changing).
+          fetch-depth: "0"
 
-    # In order to debug the integration tests, run 'touch continue' once you connect to the ssh session
-    #
-    # - name: Setup upterm session
-    #  uses: lhotari/action-upterm@d23c2722bdab893785c9fbeae314cbf080645bd7
-    #  with:
-    #    ## limits ssh access and adds the ssh public key for the user which triggered the workflow
-    #    limit-access-to-actor: true
-    #    ## limits ssh access and adds the ssh public keys of the listed GitHub users
-    #    limit-access-to-users: <yourGithubUser>
+      # In order to debug the integration tests, run 'touch continue' once you connect to the ssh session
+      #
+      # - name: Setup upterm session
+      #  uses: lhotari/action-upterm@d23c2722bdab893785c9fbeae314cbf080645bd7
+      #  with:
+      #    ## limits ssh access and adds the ssh public key for the user which triggered the workflow
+      #    limit-access-to-actor: true
+      #    ## limits ssh access and adds the ssh public keys of the listed GitHub users
+      #    limit-access-to-users: <yourGithubUser>
 
-    - uses: ./.github/actions/setup-go
-      with:
-        go-version: ${{ matrix.go }}
+      - uses: ./.github/actions/setup-go
+        with:
+          go-version: ${{ matrix.go }}
 
-    - name: Pull and set Stellar Core image
-      shell: bash
-      run: |
-        docker pull "$PROTOCOL_${{ matrix.protocol-version }}_CORE_DOCKER_IMG"
-        echo HORIZON_INTEGRATION_TESTS_DOCKER_IMG="$PROTOCOL_${{ matrix.protocol-version }}_CORE_DOCKER_IMG" >> $GITHUB_ENV
+      - name: Pull and set Stellar Core image
+        shell: bash
+        run: |
+          docker pull "$PROTOCOL_${{ matrix.protocol-version }}_CORE_DOCKER_IMG"
+          echo HORIZON_INTEGRATION_TESTS_DOCKER_IMG="$PROTOCOL_${{ matrix.protocol-version }}_CORE_DOCKER_IMG" >> $GITHUB_ENV
 
-    - if: ${{ startsWith(matrix.ingestion-backend, 'captive-core') }}
-      name: Install and enable Captive Core
-      run: |
-        # Workaround for https://github.com/actions/virtual-environments/issues/5245,
-        # libc++1-8 won't be installed if another version is installed (but apt won't give you a helpul
-        # message about why the installation fails)
-        sudo apt-get remove -y libc++1-10 libc++abi1-10 || true
-        
-        sudo wget -qO - https://apt.stellar.org/SDF.asc | APT_KEY_DONT_WARN_ON_DANGEROUS_USAGE=true sudo apt-key add -
-        sudo bash -c 'echo "deb https://apt.stellar.org focal unstable" > /etc/apt/sources.list.d/SDF-unstable.list'
-        sudo apt-get update && sudo apt-get install -y stellar-core="$PROTOCOL_${{ matrix.protocol-version }}_CORE_DEBIAN_PKG_VERSION"
-        echo "Using stellar core version $(stellar-core version)"
-        echo 'HORIZON_INTEGRATION_TESTS_ENABLE_CAPTIVE_CORE=true' >> $GITHUB_ENV
-        echo 'HORIZON_INTEGRATION_TESTS_CAPTIVE_CORE_BIN=/usr/bin/stellar-core' >> $GITHUB_ENV
+      - name: Pull and set Stellar RPC image
+        shell: bash
+        run: |
+          docker pull "$PROTOCOL_${{ matrix.protocol-version }}_STELLAR_RPC_DOCKER_IMG"
+          echo HORIZON_INTEGRATION_TESTS_STELLAR_RPC_DOCKER_IMG="$PROTOCOL_${{ matrix.protocol-version }}_STELLAR_RPC_DOCKER_IMG" >> $GITHUB_ENV
 
-    - if: ${{ matrix.ingestion-backend == 'captive-core-remote-storage' }}
-      name: Setup Captive Core Remote Storage
-      run: echo 'HORIZON_INTEGRATION_TESTS_CAPTIVE_CORE_USE_DB=true' >> $GITHUB_ENV
+      - name: Install core
+        run: |
+          # Workaround for https://github.com/actions/virtual-environments/issues/5245,
+          # libc++1-8 won't be installed if another version is installed (but apt won't give you a helpul
+          # message about why the installation fails)
+          sudo apt list --installed | grep libc++
+          sudo apt-get remove -y libc++1-* libc++abi1-* || true
 
-    - name: Build Horizon reproducible build
-      run: |
-        go build -v -trimpath -buildvcs=false ./services/horizon
-        touch empty
+          sudo wget -qO - https://apt.stellar.org/SDF.asc | APT_KEY_DONT_WARN_ON_DANGEROUS_USAGE=true sudo apt-key add -
+          sudo bash -c 'echo "deb https://apt.stellar.org focal unstable" > /etc/apt/sources.list.d/SDF-unstable.list'
+          sudo apt-get update && sudo apt-get install -y stellar-core="$PROTOCOL_${{ matrix.protocol-version }}_CORE_DEBIAN_PKG_VERSION"
+          echo "Using stellar core version $(stellar-core version)"
+          echo 'HORIZON_INTEGRATION_TESTS_CAPTIVE_CORE_BIN=/usr/bin/stellar-core' >> $GITHUB_ENV
 
-    - name: Save Horizon binary and integration tests source hash to cache
-      id: horizon_binary_tests_hash
-      uses: actions/cache@v3
-      with:
-        path: ./empty
-        key: horizon-hash-${{ hashFiles('./horizon') }}-${{ hashFiles('./clients/horizonclient/**') }}-${{ hashFiles('./protocols/horizon/**') }}-${{ hashFiles('./txnbuild/**') }}-${{ hashFiles('./services/horizon/internal/integration/**') }}-${{ env.PROTOCOL_19_CORE_DOCKER_IMG }}-${{ env.PROTOCOL_18_CORE_DOCKER_IMG }}
+      - name: Build Horizon reproducible build
+        run: |
+          go build -v -trimpath -buildvcs=false ./services/horizon
+          touch empty
 
-    - if: ${{ steps.horizon_binary_tests_hash.outputs.cache-hit != 'true' }}
-      run: go test -race -timeout 35m -v ./services/horizon/internal/integration/...
+      - name: Calculate the source hash
+        id: calculate_source_hash
+        run: |
+          combined_hash=$(echo "horizon-hash-${{ hashFiles('./horizon') }}-${{ hashFiles('./clients/horizonclient/**') }}-${{ hashFiles('./protocols/horizon/**') }}-${{ hashFiles('./txnbuild/**') }}-${{ hashFiles('./ingest/**') }}-${{ hashFiles('./xdr/**') }}-${{ hashFiles('./services/**') }}-${{ env.PROTOCOL_21_CORE_DOCKER_IMG }}-${{ env.PROTOCOL_21_RPC_DOCKER_IMG }}-${{ env.PROTOCOL_21_CORE_DEBIAN_PKG_VERSION }}-${{ env.PREFIX }}" | sha256sum | cut -d ' ' -f 1)
+          echo "COMBINED_SOURCE_HASH=$combined_hash" >> "$GITHUB_ENV"
+
+      - name: Restore Horizon binary and integration tests source hash to cache
+        id: horizon_binary_tests_hash
+        uses: actions/cache/restore@v4
+        with:
+          path: ./empty
+          lookup-only: true
+          key: ${{ env.COMBINED_SOURCE_HASH }}
+
+      - if: ${{ steps.horizon_binary_tests_hash.outputs.cache-hit != 'true' }}
+        run: go test -race -timeout 65m -v ./services/horizon/internal/integration/...
+
+      - name: Save Horizon binary and integration tests source hash to cache
+        if: ${{ success() && steps.horizon_binary_tests_hash.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ./empty
+          key: ${{ env.COMBINED_SOURCE_HASH }}
 
   verify-range:
     name: Test (and push) verify-range image
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
     env:
-      STELLAR_CORE_VERSION: 19.8.0-1227.040a29c51.focal
+      GO_VERSION: 1.23.4
+      STELLAR_CORE_VERSION: 22.1.0-2194.0241e79f7.focal
       CAPTIVE_CORE_STORAGE_PATH: /tmp
     steps:
-    - uses: actions/checkout@v3
-      with:
-        # For pull requests, build and test the PR head not a merge of the PR with the destination.
-        ref:  ${{ github.event.pull_request.head.sha || github.ref }}
+      - uses: actions/checkout@v3
+        with:
+          # For pull requests, build and test the PR head not a merge of the PR with the destination.
+          ref: ${{ github.event.pull_request.head.sha || github.ref }}
 
-    - name: Build and test the Verify Range Docker image
-      run: |
-        docker build -f services/horizon/docker/verify-range/Dockerfile -t stellar/horizon-verify-range services/horizon/docker/verify-range/
-        # Any range should do for basic testing, this range was chosen pretty early in history so that it only takes a few mins to run
-        docker run -e BRANCH=$(git rev-parse HEAD) -e FROM=10000063 -e TO=10000127 stellar/horizon-verify-range
+      - name: Build and test the Verify Range Docker image
+        run: |
+          docker build --build-arg="GO_VERSION=$GO_VERSION" -f services/horizon/docker/verify-range/Dockerfile -t stellar/horizon-verify-range services/horizon/docker/verify-range/
+          # Any range should do for basic testing, this range was chosen pretty early in history so that it only takes a few mins to run
+          docker run -e BRANCH=$(git rev-parse HEAD) -e FROM=10000063 -e TO=10000127 stellar/horizon-verify-range
 
-    # Push image
-    - if: github.ref == 'refs/heads/master'
-      name: Login to DockerHub
-      uses: docker/login-action@bb984efc561711aaa26e433c32c3521176eae55b
-      with:
-        username: ${{ secrets.DOCKERHUB_USERNAME }}
-        password: ${{ secrets.DOCKERHUB_TOKEN }}
+      # Push image
+      - if: github.ref == 'refs/heads/master'
+        name: Login to DockerHub
+        uses: docker/login-action@bb984efc561711aaa26e433c32c3521176eae55b
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-    - if: github.ref == 'refs/heads/master'
-      name: Push to DockerHub
-      run: docker push stellar/horizon-verify-range:latest
+      - if: github.ref == 'refs/heads/master'
+        name: Push to DockerHub
+        run: docker push stellar/horizon-verify-range:latest

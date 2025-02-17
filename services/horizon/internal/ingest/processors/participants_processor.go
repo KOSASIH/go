@@ -7,7 +7,7 @@ import (
 
 	"github.com/stellar/go/ingest"
 	"github.com/stellar/go/services/horizon/internal/db2/history"
-	set "github.com/stellar/go/support/collections/set"
+	"github.com/stellar/go/support/db"
 	"github.com/stellar/go/support/errors"
 	"github.com/stellar/go/toid"
 	"github.com/stellar/go/xdr"
@@ -16,62 +16,25 @@ import (
 // ParticipantsProcessor is a processor which ingests various participants
 // from different sources (transactions, operations, etc)
 type ParticipantsProcessor struct {
-	participantsQ  history.QParticipants
-	sequence       uint32
-	participantSet map[string]participant
+	accountLoader *history.AccountLoader
+	txBatch       history.TransactionParticipantsBatchInsertBuilder
+	opBatch       history.OperationParticipantBatchInsertBuilder
+	network       string
 }
 
-func NewParticipantsProcessor(participantsQ history.QParticipants, sequence uint32) *ParticipantsProcessor {
+func NewParticipantsProcessor(
+	accountLoader *history.AccountLoader,
+	txBatch history.TransactionParticipantsBatchInsertBuilder,
+	opBatch history.OperationParticipantBatchInsertBuilder,
+	network string,
+
+) *ParticipantsProcessor {
 	return &ParticipantsProcessor{
-		participantsQ:  participantsQ,
-		sequence:       sequence,
-		participantSet: map[string]participant{},
+		accountLoader: accountLoader,
+		txBatch:       txBatch,
+		opBatch:       opBatch,
+		network:       network,
 	}
-}
-
-type participant struct {
-	accountID      int64
-	transactionSet set.Set[int64]
-	operationSet   set.Set[int64]
-}
-
-func (p *participant) addTransactionID(id int64) {
-	if p.transactionSet == nil {
-		p.transactionSet = set.Set[int64]{}
-	}
-	p.transactionSet.Add(id)
-}
-
-func (p *participant) addOperationID(id int64) {
-	if p.operationSet == nil {
-		p.operationSet = set.Set[int64]{}
-	}
-	p.operationSet.Add(id)
-}
-
-func (p *ParticipantsProcessor) loadAccountIDs(ctx context.Context, participantSet map[string]participant) error {
-	addresses := make([]string, 0, len(participantSet))
-	for address := range participantSet {
-		addresses = append(addresses, address)
-	}
-
-	addressToID, err := p.participantsQ.CreateAccounts(ctx, addresses, maxBatchSize)
-	if err != nil {
-		return errors.Wrap(err, "Could not create account ids")
-	}
-
-	for _, address := range addresses {
-		id, ok := addressToID[address]
-		if !ok {
-			return errors.Errorf("no id found for account address %s", address)
-		}
-
-		participantForAddress := participantSet[address]
-		participantForAddress.accountID = id
-		participantSet[address] = participantForAddress
-	}
-
-	return nil
 }
 
 func participantsForChanges(
@@ -140,8 +103,11 @@ func participantsForMeta(
 	return participants, nil
 }
 
+func (p *ParticipantsProcessor) Name() string {
+	return "processors.ParticipantsProcessor"
+}
+
 func (p *ParticipantsProcessor) addTransactionParticipants(
-	participantSet map[string]participant,
 	sequence uint32,
 	transaction ingest.LedgerTransaction,
 ) error {
@@ -155,101 +121,56 @@ func (p *ParticipantsProcessor) addTransactionParticipants(
 	}
 
 	for _, participant := range transactionParticipants {
-		address := participant.Address()
-		entry := participantSet[address]
-		entry.addTransactionID(transactionID)
-		participantSet[address] = entry
+		if err := p.txBatch.Add(transactionID, p.accountLoader.GetFuture(participant.Address())); err != nil {
+			return err
+		}
 	}
 
 	return nil
 }
 
 func (p *ParticipantsProcessor) addOperationsParticipants(
-	participantSet map[string]participant,
 	sequence uint32,
 	transaction ingest.LedgerTransaction,
 ) error {
-	participants, err := operationsParticipants(transaction, sequence)
+	participants, err := operationsParticipants(transaction, sequence, p.network)
 	if err != nil {
 		return errors.Wrap(err, "could not determine operation participants")
 	}
 
-	for operationID, p := range participants {
-		for _, participant := range p {
+	for operationID, addresses := range participants {
+		for _, participant := range addresses {
 			address := participant.Address()
-			entry := participantSet[address]
-			entry.addOperationID(operationID)
-			participantSet[address] = entry
+			if err := p.opBatch.Add(operationID, p.accountLoader.GetFuture(address)); err != nil {
+				return err
+			}
 		}
 	}
 
 	return nil
 }
 
-func (p *ParticipantsProcessor) insertDBTransactionParticipants(ctx context.Context, participantSet map[string]participant) error {
-	batch := p.participantsQ.NewTransactionParticipantsBatchInsertBuilder(maxBatchSize)
+func (p *ParticipantsProcessor) ProcessTransaction(lcm xdr.LedgerCloseMeta, transaction ingest.LedgerTransaction) error {
 
-	for _, entry := range participantSet {
-		for transactionID := range entry.transactionSet {
-			if err := batch.Add(ctx, transactionID, entry.accountID); err != nil {
-				return errors.Wrap(err, "Could not insert transaction participant in db")
-			}
-		}
+	if err := p.addTransactionParticipants(lcm.LedgerSequence(), transaction); err != nil {
+		return err
 	}
 
-	if err := batch.Exec(ctx); err != nil {
+	if err := p.addOperationsParticipants(lcm.LedgerSequence(), transaction); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (p *ParticipantsProcessor) Flush(ctx context.Context, session db.SessionInterface) error {
+	if err := p.txBatch.Exec(ctx, session); err != nil {
 		return errors.Wrap(err, "Could not flush transaction participants to db")
 	}
-	return nil
-}
-
-func (p *ParticipantsProcessor) insertDBOperationsParticipants(ctx context.Context, participantSet map[string]participant) error {
-	batch := p.participantsQ.NewOperationParticipantBatchInsertBuilder(maxBatchSize)
-
-	for _, entry := range participantSet {
-		for operationID := range entry.operationSet {
-			if err := batch.Add(ctx, operationID, entry.accountID); err != nil {
-				return errors.Wrap(err, "could not insert operation participant in db")
-			}
-		}
-	}
-
-	if err := batch.Exec(ctx); err != nil {
-		return errors.Wrap(err, "could not flush operation participants to db")
+	if err := p.opBatch.Exec(ctx, session); err != nil {
+		return errors.Wrap(err, "Could not flush operation participants to db")
 	}
 	return nil
-}
-
-func (p *ParticipantsProcessor) ProcessTransaction(ctx context.Context, transaction ingest.LedgerTransaction) (err error) {
-	err = p.addTransactionParticipants(p.participantSet, p.sequence, transaction)
-	if err != nil {
-		return err
-	}
-
-	err = p.addOperationsParticipants(p.participantSet, p.sequence, transaction)
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func (p *ParticipantsProcessor) Commit(ctx context.Context) (err error) {
-	if len(p.participantSet) > 0 {
-		if err = p.loadAccountIDs(ctx, p.participantSet); err != nil {
-			return err
-		}
-
-		if err = p.insertDBTransactionParticipants(ctx, p.participantSet); err != nil {
-			return err
-		}
-
-		if err = p.insertDBOperationsParticipants(ctx, p.participantSet); err != nil {
-			return err
-		}
-	}
-
-	return err
 }
 
 func ParticipantsForTransaction(

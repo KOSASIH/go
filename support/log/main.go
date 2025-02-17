@@ -2,9 +2,10 @@ package log
 
 import (
 	"context"
+	"io"
 	"os"
 
-	loggly "github.com/segmentio/go-loggly"
+	"github.com/segmentio/go-loggly"
 	"github.com/sirupsen/logrus"
 )
 
@@ -43,7 +44,7 @@ func New() *Entry {
 	l := logrus.New()
 	l.Level = logrus.WarnLevel
 	l.Formatter.(*logrus.TextFormatter).FullTimestamp = true
-	l.Formatter.(*logrus.TextFormatter).TimestampFormat = "2006-01-02T15:04:05.000Z07:00"
+	l.Formatter.(*logrus.TextFormatter).TimestampFormat = timeStampFormat
 	return &Entry{entry: *logrus.NewEntry(l).WithField("pid", os.Getpid())}
 }
 
@@ -78,6 +79,10 @@ func PushContext(parent context.Context, modFn func(*Entry) *Entry) context.Cont
 
 func SetLevel(level logrus.Level) {
 	DefaultLogger.SetLevel(level)
+}
+
+func SetOut(out io.Writer) {
+	DefaultLogger.entry.Logger.Out = out
 }
 
 func WithField(key string, value interface{}) *Entry {

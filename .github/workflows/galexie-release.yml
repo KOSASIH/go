@@ -1,0 +1,59 @@
+name: Galexie Release 
+
+on:
+  push:
+    tags: ['galexie-v*']
+
+jobs:
+
+  publish-docker:
+    name: Test and push docker image
+    runs-on: ubuntu-22.04
+    env:
+      GALEXIE_INTEGRATION_TESTS_ENABLED: "true"
+      GALEXIE_INTEGRATION_TESTS_CAPTIVE_CORE_BIN: /usr/bin/stellar-core
+      # this pins to a version of quickstart:testing that has the same version as STELLAR_CORE_VERSION
+      # this is the multi-arch index sha, get it by 'docker buildx imagetools inspect stellar/quickstart:testing'
+      GALEXIE_INTEGRATION_TESTS_QUICKSTART_IMAGE: docker.io/stellar/quickstart:testing@sha256:5333ec87069efd7bb61f6654a801dc093bf0aad91f43a5ba84806d3efe4a6322
+      GALEXIE_INTEGRATION_TESTS_QUICKSTART_IMAGE_PULL: "false"
+      STELLAR_CORE_VERSION: 22.1.0-2194.0241e79f7.focal
+    steps:
+      - name: Set VERSION
+        run: |
+          echo "VERSION=${GITHUB_REF_NAME#galexie-v}" >> $GITHUB_ENV
+
+      - uses: actions/checkout@v3
+        with:
+          ref: ${{ github.sha }}
+      - name: Pull Quickstart image
+        shell: bash
+        run: |
+          docker pull "$GALEXIE_INTEGRATION_TESTS_QUICKSTART_IMAGE"
+      - name: Install captive core
+        run: |
+          # Workaround for https://github.com/actions/virtual-environments/issues/5245,
+          # libc++1-8 won't be installed if another version is installed (but apt won't give you a helpul
+          # message about why the installation fails)
+          sudo apt list --installed | grep libc++
+          sudo apt-get remove -y libc++1-* libc++abi1-* || true
+
+          sudo wget -qO - https://apt.stellar.org/SDF.asc | APT_KEY_DONT_WARN_ON_DANGEROUS_USAGE=true sudo apt-key add -
+          sudo bash -c 'echo "deb https://apt.stellar.org focal unstable" > /etc/apt/sources.list.d/SDF-unstable.list'
+          sudo apt-get update && sudo apt-get install -y stellar-core="$STELLAR_CORE_VERSION"
+          echo "Using stellar core version $(stellar-core version)"
+
+      - name: Run tests 
+        run: go test -v -race -run TestGalexieTestSuite ./services/galexie/...
+
+      - name: Build docker
+        run: make -C services/galexie docker-build
+
+      # Push images
+      - name: Login to DockerHub
+        uses: docker/login-action@bb984efc561711aaa26e433c32c3521176eae55b
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Push to DockerHub
+        run: make -C services/galexie docker-push

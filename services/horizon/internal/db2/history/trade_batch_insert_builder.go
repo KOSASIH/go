@@ -24,7 +24,7 @@ const (
 // rows into the history_trades table
 type InsertTrade struct {
 	HistoryOperationID int64     `db:"history_operation_id"`
-	Order              int32     `db:"\"order\""`
+	Order              int32     `db:"order"`
 	LedgerCloseTime    time.Time `db:"ledger_closed_at"`
 
 	CounterAssetID         int64    `db:"counter_asset_id"`
@@ -55,36 +55,33 @@ type InsertTrade struct {
 // TradeBatchInsertBuilder is used to insert trades into the
 // history_trades table
 type TradeBatchInsertBuilder interface {
-	Add(ctx context.Context, entries ...InsertTrade) error
-	Exec(ctx context.Context) error
+	Add(entries ...InsertTrade) error
+	Exec(ctx context.Context, session db.SessionInterface) error
 }
 
 // tradeBatchInsertBuilder is a simple wrapper around db.BatchInsertBuilder
 type tradeBatchInsertBuilder struct {
-	builder db.BatchInsertBuilder
-	q       *Q
+	builder db.FastBatchInsertBuilder
+	table   string
 }
 
 // NewTradeBatchInsertBuilder constructs a new TradeBatchInsertBuilder instance
-func (q *Q) NewTradeBatchInsertBuilder(maxBatchSize int) TradeBatchInsertBuilder {
+func (q *Q) NewTradeBatchInsertBuilder() TradeBatchInsertBuilder {
 	return &tradeBatchInsertBuilder{
-		builder: db.BatchInsertBuilder{
-			Table:        q.GetTable("history_trades"),
-			MaxBatchSize: maxBatchSize,
-		},
-		q: q,
+		table:   "history_trades",
+		builder: db.FastBatchInsertBuilder{},
 	}
 }
 
 // Exec flushes all outstanding trades to the database
-func (i *tradeBatchInsertBuilder) Exec(ctx context.Context) error {
-	return i.builder.Exec(ctx)
+func (i *tradeBatchInsertBuilder) Exec(ctx context.Context, session db.SessionInterface) error {
+	return i.builder.Exec(ctx, session, i.table)
 }
 
 // Add adds a new trade to the batch
-func (i *tradeBatchInsertBuilder) Add(ctx context.Context, entries ...InsertTrade) error {
+func (i *tradeBatchInsertBuilder) Add(entries ...InsertTrade) error {
 	for _, entry := range entries {
-		err := i.builder.RowStruct(ctx, entry)
+		err := i.builder.RowStruct(entry)
 		if err != nil {
 			return errors.Wrap(err, "failed to add trade")
 		}

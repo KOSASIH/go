@@ -88,7 +88,7 @@ func TestClawbackRoundTrip(t *testing.T) {
 		Amount:        "10.0000000",
 		Asset:         CreditAsset{"USD", "GCXKG6RN4ONIEPCMNFB732A436Z5PNDSRLGWK7GBLCMQLIFO4S7EYWVU"},
 	}
-	testOperationsMarshallingRoundtrip(t, []Operation{&clawback}, false)
+	testOperationsMarshalingRoundtrip(t, []Operation{&clawback}, false)
 
 	// with muxed accounts
 	clawback = Clawback{
@@ -97,5 +97,5 @@ func TestClawbackRoundTrip(t *testing.T) {
 		Amount:        "10.0000000",
 		Asset:         CreditAsset{"USD", "GCXKG6RN4ONIEPCMNFB732A436Z5PNDSRLGWK7GBLCMQLIFO4S7EYWVU"},
 	}
-	testOperationsMarshallingRoundtrip(t, []Operation{&clawback}, true)
+	testOperationsMarshalingRoundtrip(t, []Operation{&clawback}, true)
 }

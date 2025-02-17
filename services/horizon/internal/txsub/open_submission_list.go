@@ -1,12 +1,10 @@
 package txsub
 
 import (
-	"context"
 	"fmt"
 	"sync"
 	"time"
 
-	"github.com/go-errors/errors"
 	"github.com/stellar/go/support/log"
 )
 
@@ -33,16 +31,12 @@ type submissionList struct {
 	log         *log.Entry
 }
 
-func (s *submissionList) Add(ctx context.Context, hash string, l Listener) error {
+func (s *submissionList) Add(hash string, l Listener) {
 	s.Lock()
 	defer s.Unlock()
 
 	if cap(l) == 0 {
 		panic("Unbuffered listener cannot be added to OpenSubmissionList")
-	}
-
-	if len(hash) != 64 {
-		return errors.New("Unexpected transaction hash length: must be 64 hex characters")
 	}
 
 	os, ok := s.submissions[hash]
@@ -60,17 +54,15 @@ func (s *submissionList) Add(ctx context.Context, hash string, l Listener) error
 	}
 
 	os.Listeners = append(os.Listeners, l)
-
-	return nil
 }
 
-func (s *submissionList) Finish(ctx context.Context, hash string, r Result) error {
+func (s *submissionList) Finish(hash string, r Result) {
 	s.Lock()
 	defer s.Unlock()
 
 	os, ok := s.submissions[hash]
 	if !ok {
-		return nil
+		return
 	}
 
 	s.log.WithFields(log.F{
@@ -85,10 +77,9 @@ func (s *submissionList) Finish(ctx context.Context, hash string, r Result) erro
 	}
 
 	delete(s.submissions, hash)
-	return nil
 }
 
-func (s *submissionList) Clean(ctx context.Context, maxAge time.Duration) (int, error) {
+func (s *submissionList) Clean(maxAge time.Duration) int {
 	s.Lock()
 	defer s.Unlock()
 
@@ -107,10 +98,10 @@ func (s *submissionList) Clean(ctx context.Context, maxAge time.Duration) (int, 
 		}
 	}
 
-	return len(s.submissions), nil
+	return len(s.submissions)
 }
 
-func (s *submissionList) Pending(ctx context.Context) []string {
+func (s *submissionList) Pending() []string {
 	s.Lock()
 	defer s.Unlock()
 	results := make([]string, 0, len(s.submissions))

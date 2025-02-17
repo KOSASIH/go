@@ -1,5 +1,7 @@
 #! /usr/bin/env bash
 set -e
+set -o xtrace
+
 
 apt-get update
 apt-get install -y curl git libpq-dev libsqlite3-dev libsasl2-dev postgresql-client postgresql postgresql-contrib sudo vim zlib1g-dev wget gnupg2 lsb-release
@@ -11,13 +13,16 @@ echo "deb https://apt.stellar.org $(lsb_release -cs) stable" | sudo tee -a /etc/
 apt-get update
 apt-get install -y stellar-core=${STELLAR_CORE_VERSION}
 
-wget -q https://dl.google.com/go/go1.18.linux-amd64.tar.gz
-tar -C /usr/local -xzf go1.18.linux-amd64.tar.gz
-
 git clone https://github.com/stellar/go.git stellar-go
 cd stellar-go
+
 # By default "git fetch" only fetches refs/<branchname>
 # Below ensures we also fetch PR refs
 git config --add remote.origin.fetch "+refs/pull/*/head:refs/remotes/origin/pull/*"
 git fetch --force --quiet origin
+
+wget -q https://dl.google.com/go/go${GO_VERSION}.linux-amd64.tar.gz
+tar -C /usr/local -xzf go${GO_VERSION}.linux-amd64.tar.gz
+rm -f go${GO_VERSION}.linux-amd64.tar.gz
+
 /usr/local/go/bin/go build -v ./services/horizon

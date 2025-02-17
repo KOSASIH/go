@@ -1,0 +1,19 @@
+[buffered_storage_backend_config]
+buffer_size = 5  # The size of the buffer
+num_workers = 5      # Number of workers
+retry_limit = 3      # Number of retries allowed
+retry_wait = "30s"    # Duration to wait before retrying in seconds
+
+# Datastore Configuration
+[datastore_config]
+# Specifies the type of datastore. Currently, only Google Cloud Storage (GCS) is supported.
+type = "GCS"
+
+[datastore_config.params]
+# The Google Cloud Storage bucket path for storing data, with optional subpaths for organization.
+destination_bucket_path = "path/to/my/bucket"
+
+[datastore_config.schema]
+# Configuration for data organization
+ledgers_per_file = 1      # Number of ledgers stored in each file.
+files_per_partition = 64000   # Number of files per partition/directory.

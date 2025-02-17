@@ -88,8 +88,8 @@ func TestLiquidityPoolHappyPath(t *testing.T) {
 			LiquidityPoolID: [32]byte(poolID),
 			MaxAmountA:      "400",
 			MaxAmountB:      "777",
-			MinPrice:        xdr.Price{1, 2},
-			MaxPrice:        xdr.Price{2, 1},
+			MinPrice:        xdr.Price{N: 1, D: 2},
+			MaxPrice:        xdr.Price{N: 2, D: 1},
 		},
 	)
 
@@ -156,8 +156,6 @@ func TestLiquidityPoolHappyPath(t *testing.T) {
 	tt.Equal("credit_alphanum4", stat.Asset.Type)
 	tt.Equal("USD", stat.Asset.Code)
 	tt.Equal(master.Address(), stat.Asset.Issuer)
-	tt.Equal(int32(2), stat.NumAccounts)
-	tt.Equal("225.0000000", stat.Amount)
 	tt.Equal(int32(1), stat.NumLiquidityPools)
 	tt.Equal("775.0000000", stat.LiquidityPoolsAmount)
 
@@ -475,8 +473,8 @@ func TestLiquidityPoolRevoke(t *testing.T) {
 			LiquidityPoolID: [32]byte(poolID),
 			MaxAmountA:      "400",
 			MaxAmountB:      "777",
-			MinPrice:        xdr.Price{1, 2},
-			MaxPrice:        xdr.Price{2, 1},
+			MinPrice:        xdr.Price{N: 1, D: 2},
+			MaxPrice:        xdr.Price{N: 2, D: 1},
 		},
 		&txnbuild.SetTrustLineFlags{
 			SourceAccount: master.Address(),
@@ -606,27 +604,45 @@ func TestLiquidityPoolRevoke(t *testing.T) {
 	tt.Equal(master.Address(), ef4.Asset.Issuer)
 	tt.Equal(shareAccount.GetAccountID(), ef4.Trustor)
 
+	// the ordering of the claimable_balance_created effects depends on
+	// the ids of the claimable balances which can vary between test runs.
+	// we assert that there will be two claimable balances created,
+	// one holding 777 usd and another holding 400 xlm but
+	// we don't know the ordering since it depends on the claimable
+	// balance ids which we don't know ahead of time.
+	usdAsset := fmt.Sprintf("USD:%s", master.Address())
+	expectedAmount := map[string]string{
+		usdAsset: "777.0000000",
+		"native": "400.0000000",
+	}
 	ef5 := (effs.Embedded.Records[4]).(effects.ClaimableBalanceCreated)
 	tt.Equal("claimable_balance_created", ef5.Type)
-	tt.Equal("native", ef5.Asset)
-	tt.Equal("400.0000000", ef5.Amount)
+	var expectedNextAsset string
+	if ef5.Asset == usdAsset {
+		expectedNextAsset = "native"
+	} else if ef5.Asset == "native" {
+		expectedNextAsset = usdAsset
+	} else {
+		tt.Failf("unexpected asset %v", ef5.Asset)
+	}
+	tt.Equal(expectedAmount[ef5.Asset], ef5.Amount)
 
 	ef6 := (effs.Embedded.Records[5]).(effects.ClaimableBalanceClaimantCreated)
 	tt.Equal("claimable_balance_claimant_created", ef6.Type)
-	tt.Equal("native", ef6.Asset)
-	tt.Equal("400.0000000", ef6.Amount)
+	tt.Equal(ef5.Asset, ef6.Asset)
+	tt.Equal(ef5.Amount, ef6.Amount)
 	tt.Equal(shareKeys.Address(), ef6.Account)
 	tt.Equal(xdr.ClaimPredicateTypeClaimPredicateUnconditional, ef6.Predicate.Type)
 
 	ef7 := (effs.Embedded.Records[6]).(effects.ClaimableBalanceCreated)
 	tt.Equal("claimable_balance_created", ef7.Type)
-	tt.Equal(fmt.Sprintf("USD:%s", master.Address()), ef7.Asset)
-	tt.Equal("777.0000000", ef7.Amount)
+	tt.Equal(expectedNextAsset, ef7.Asset)
+	tt.Equal(expectedAmount[ef7.Asset], ef7.Amount)
 
 	ef8 := (effs.Embedded.Records[7]).(effects.ClaimableBalanceClaimantCreated)
 	tt.Equal("claimable_balance_claimant_created", ef8.Type)
-	tt.Equal(fmt.Sprintf("USD:%s", master.Address()), ef8.Asset)
-	tt.Equal("777.0000000", ef8.Amount)
+	tt.Equal(ef7.Asset, ef8.Asset)
+	tt.Equal(ef7.Amount, ef8.Amount)
 	tt.Equal(shareKeys.Address(), ef8.Account)
 	tt.Equal(xdr.ClaimPredicateTypeClaimPredicateUnconditional, ef8.Predicate.Type)
 
@@ -667,13 +683,13 @@ func TestLiquidityPoolFailedDepositAndWithdraw(t *testing.T) {
 			LiquidityPoolID: nonExistentPoolID,
 			MaxAmountA:      "400",
 			MaxAmountB:      "777",
-			MinPrice:        xdr.Price{1, 2},
-			MaxPrice:        xdr.Price{2, 1},
+			MinPrice:        xdr.Price{N: 1, D: 2},
+			MaxPrice:        xdr.Price{N: 2, D: 1},
 		},
 	)
 	_, err = itest.Client().SubmitTransaction(tx)
 	tt.Error(err)
-	hash, err := tx.HashHex(integration.StandaloneNetworkPassphrase)
+	hash, err := tx.HashHex(itest.Config().NetworkPassphrase)
 	tt.NoError(err)
 	opsResponse, err := itest.Client().Operations(horizonclient.OperationRequest{
 		ForTransaction: hash,
@@ -707,7 +723,7 @@ func TestLiquidityPoolFailedDepositAndWithdraw(t *testing.T) {
 	_, err = itest.Client().SubmitTransaction(tx)
 	tt.Error(err)
 
-	hash, err = tx.HashHex(integration.StandaloneNetworkPassphrase)
+	hash, err = tx.HashHex(itest.Config().NetworkPassphrase)
 	tt.NoError(err)
 	opsResponse, err = itest.Client().Operations(horizonclient.OperationRequest{
 		ForTransaction: hash,

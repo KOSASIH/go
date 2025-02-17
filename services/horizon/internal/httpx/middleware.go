@@ -4,12 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"net/http"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/go-chi/chi"
 	"github.com/go-chi/chi/middleware"
 	"github.com/prometheus/client_golang/prometheus"
 
@@ -24,6 +22,7 @@ import (
 	hProblem "github.com/stellar/go/services/horizon/internal/render/problem"
 	"github.com/stellar/go/support/db"
 	supportErrors "github.com/stellar/go/support/errors"
+	supportHttp "github.com/stellar/go/support/http"
 	"github.com/stellar/go/support/log"
 	"github.com/stellar/go/support/render/problem"
 )
@@ -79,11 +78,21 @@ func loggerMiddleware(serverMetrics *ServerMetrics) func(next http.Handler) http
 			// is reset before sending the first event no Content-Type header is sent in a response.
 			acceptHeader := r.Header.Get("Accept")
 			streaming := strings.Contains(acceptHeader, render.MimeEventStream)
+			route := supportHttp.GetChiRoutePattern(r)
+
+			requestLabels := prometheus.Labels{
+				"route":     route,
+				"streaming": strconv.FormatBool(streaming),
+				"method":    r.Method,
+			}
+			serverMetrics.RequestsInFlightGauge.With(requestLabels).Inc()
+			defer serverMetrics.RequestsInFlightGauge.With(requestLabels).Dec()
+			serverMetrics.RequestsReceivedCounter.With(requestLabels).Inc()
 
 			then := time.Now()
 			next.ServeHTTP(mw, r.WithContext(ctx))
 			duration := time.Since(then)
-			logEndOfRequest(ctx, r, serverMetrics.RequestDurationSummary, duration, mw, streaming)
+			logEndOfRequest(ctx, r, route, serverMetrics.RequestDurationSummary, duration, mw, streaming)
 		})
 	}
 }
@@ -130,51 +139,7 @@ func getClientData(r *http.Request, headerName string) string {
 	return value
 }
 
-var routeRegexp = regexp.MustCompile("{([^:}]*):[^}]*}")
-
-// https://prometheus.io/docs/instrumenting/exposition_formats/
-// label_value can be any sequence of UTF-8 characters, but the backslash (\),
-// double-quote ("), and line feed (\n) characters have to be escaped as \\,
-// \", and \n, respectively.
-func sanitizeMetricRoute(routePattern string) string {
-	route := routeRegexp.ReplaceAllString(routePattern, "{$1}")
-	route = strings.ReplaceAll(route, "\\", "\\\\")
-	route = strings.ReplaceAll(route, "\"", "\\\"")
-	route = strings.ReplaceAll(route, "\n", "\\n")
-	if route == "" {
-		// Can be empty when request did not reach the final route (ex. blocked by
-		// a middleware). More info: https://github.com/go-chi/chi/issues/270
-		return "undefined"
-	}
-	return route
-}
-
-// Author: https://github.com/rliebz
-// From: https://github.com/go-chi/chi/issues/270#issuecomment-479184559
-// https://github.com/go-chi/chi/blob/master/LICENSE
-func getRoutePattern(r *http.Request) string {
-	rctx := chi.RouteContext(r.Context())
-	if pattern := rctx.RoutePattern(); pattern != "" {
-		// Pattern is already available
-		return pattern
-	}
-
-	routePath := r.URL.Path
-	if r.URL.RawPath != "" {
-		routePath = r.URL.RawPath
-	}
-
-	tctx := chi.NewRouteContext()
-	if !rctx.Routes.Match(tctx, r.Method, routePath) {
-		return ""
-	}
-
-	// tctx has the updated pattern, since Match mutates it
-	return tctx.RoutePattern()
-}
-
-func logEndOfRequest(ctx context.Context, r *http.Request, requestDurationSummary *prometheus.SummaryVec, duration time.Duration, mw middleware.WrapResponseWriter, streaming bool) {
-	route := sanitizeMetricRoute(getRoutePattern(r))
+func logEndOfRequest(ctx context.Context, r *http.Request, route string, requestDurationSummary *prometheus.SummaryVec, duration time.Duration, mw middleware.WrapResponseWriter, streaming bool) {
 
 	referer := r.Referer()
 	if referer == "" {
@@ -232,15 +197,15 @@ func recoverMiddleware(h http.Handler) http.Handler {
 // NewHistoryMiddleware adds session to the request context and ensures Horizon
 // is not in a stale state, which is when the difference between latest core
 // ledger and latest history ledger is higher than the given threshold
-func NewHistoryMiddleware(ledgerState *ledger.State, staleThreshold int32, session db.SessionInterface) func(http.Handler) http.Handler {
+func NewHistoryMiddleware(ledgerState *ledger.State, staleThreshold int32, session db.SessionInterface, contextDBTimeout time.Duration) func(http.Handler) http.Handler {
 	return func(h http.Handler) http.Handler {
 
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx := r.Context()
-			chiRoute := chi.RouteContext(ctx)
-			if chiRoute != nil {
-				ctx = context.WithValue(ctx, &db.RouteContextKey, sanitizeMetricRoute(chiRoute.RoutePattern()))
+			if routePattern := supportHttp.GetChiRoutePattern(r); routePattern != "" {
+				ctx = context.WithValue(ctx, &db.RouteContextKey, routePattern)
 			}
+			ctx = setContextDBTimeout(contextDBTimeout, ctx)
 			if staleThreshold > 0 {
 				ls := ledgerState.CurrentStatus()
 				isStale := (ls.CoreLatest - ls.HistoryLatest) > int32(staleThreshold)
@@ -274,6 +239,7 @@ func NewHistoryMiddleware(ledgerState *ledger.State, staleThreshold int32, sessi
 // returning invalid data to the user)
 type StateMiddleware struct {
 	HorizonSession      db.SessionInterface
+	ClientQueryTimeout  time.Duration
 	NoStateVerification bool
 }
 
@@ -309,10 +275,10 @@ func ingestionStatus(ctx context.Context, q *history.Q) (uint32, bool, error) {
 func (m *StateMiddleware) WrapFunc(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
-		chiRoute := chi.RouteContext(ctx)
-		if chiRoute != nil {
-			ctx = context.WithValue(ctx, &db.RouteContextKey, sanitizeMetricRoute(chiRoute.RoutePattern()))
+		if routePattern := supportHttp.GetChiRoutePattern(r); routePattern != "" {
+			ctx = context.WithValue(ctx, &db.RouteContextKey, routePattern)
 		}
+		ctx = setContextDBTimeout(m.ClientQueryTimeout, ctx)
 		session := m.HorizonSession.Clone()
 		q := &history.Q{session}
 		sseRequest := render.Negotiate(r) == render.MimeEventStream
@@ -322,7 +288,7 @@ func (m *StateMiddleware) WrapFunc(h http.HandlerFunc) http.HandlerFunc {
 		// Otherwise, because the ingestion system is running concurrently with this request,
 		// it is possible to have one read fetch data from ledger N and another read
 		// fetch data from ledger N+1 .
-		err := session.BeginTx(&sql.TxOptions{
+		err := session.BeginTx(ctx, &sql.TxOptions{
 			Isolation: sql.LevelRepeatableRead,
 			ReadOnly:  true,
 		})
@@ -379,6 +345,14 @@ func (m *StateMiddleware) WrapFunc(h http.HandlerFunc) http.HandlerFunc {
 			context.WithValue(ctx, &horizonContext.SessionContextKey, session),
 		))
 	}
+}
+
+func setContextDBTimeout(timeout time.Duration, ctx context.Context) context.Context {
+	var deadline time.Time
+	if timeout > 0 {
+		deadline = time.Now().Add(timeout)
+	}
+	return context.WithValue(ctx, &db.DeadlineCtxKey, deadline)
 }
 
 // WrapFunc executes the middleware on a given HTTP handler function

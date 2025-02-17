@@ -1,0 +1,15 @@
+[datastore_config]
+type = "GCS"
+
+[datastore_config.params]
+destination_bucket_path = "integration-test/standalone"
+
+[datastore_config.schema]
+ledgers_per_file = 1
+files_per_partition = 10
+
+[stellar_core_config]
+captive_core_toml_path = "test/integration_captive_core.cfg"
+history_archive_urls = ["http://localhost:1570"]
+network_passphrase = "Standalone Network ; February 2017"
+checkpoint_frequency = 8

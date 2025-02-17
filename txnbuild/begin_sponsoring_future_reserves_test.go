@@ -9,5 +9,5 @@ func TestBeginSponsoringFutureReservesRoundTrip(t *testing.T) {
 		SponsoredID: newKeypair1().Address(),
 	}
 
-	testOperationsMarshallingRoundtrip(t, []Operation{beginSponsoring}, false)
+	testOperationsMarshalingRoundtrip(t, []Operation{beginSponsoring}, false)
 }

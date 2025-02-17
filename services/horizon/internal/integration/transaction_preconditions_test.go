@@ -5,88 +5,18 @@ import (
 	"encoding/base64"
 	"math"
 	"strconv"
-	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
 
 	sdk "github.com/stellar/go/clients/horizonclient"
 	"github.com/stellar/go/keypair"
 	"github.com/stellar/go/network"
-	"github.com/stellar/go/protocols/horizon"
 	"github.com/stellar/go/services/horizon/internal/test/integration"
 	"github.com/stellar/go/txnbuild"
 	"github.com/stellar/go/xdr"
-	"github.com/stretchr/testify/assert"
 )
-
-func TestTransactionPreconditionsMinSeq(t *testing.T) {
-	tt := assert.New(t)
-	itest := integration.NewTest(t, integration.Config{})
-	if itest.GetEffectiveProtocolVersion() < 19 {
-		t.Skip("Can't run with protocol < 19")
-	}
-	master := itest.Master()
-	masterAccount := itest.MasterAccount()
-	currentAccountSeq, err := masterAccount.GetSequenceNumber()
-	tt.NoError(err)
-
-	// Ensure that the minSequence of the transaction is enough
-	// but the sequence isn't
-	txParams := buildTXParams(master, masterAccount, currentAccountSeq+100)
-
-	// this errors because the tx.seqNum is more than +1 from sourceAccoubnt.seqNum
-	_, err = itest.SubmitTransaction(master, txParams)
-	tt.Error(err)
-
-	// Now the transaction should be submitted without problems
-	txParams.Preconditions.MinSequenceNumber = &currentAccountSeq
-	tx := itest.MustSubmitTransaction(master, txParams)
-
-	txHistory, err := itest.Client().TransactionDetail(tx.Hash)
-	assert.NoError(t, err)
-	assert.Equal(t, txHistory.Preconditions.MinAccountSequence, strconv.FormatInt(*txParams.Preconditions.MinSequenceNumber, 10))
-
-	// Test the transaction submission queue by sending transactions out of order
-	// and making sure they are all executed properly
-	masterAccount = itest.MasterAccount()
-	currentAccountSeq, err = masterAccount.GetSequenceNumber()
-	tt.NoError(err)
-
-	seqs := []struct {
-		minSeq int64
-		seq    int64
-	}{
-		{0, currentAccountSeq + 9},                 // sent first, executed second
-		{0, currentAccountSeq + 10},                // sent second, executed third
-		{currentAccountSeq, currentAccountSeq + 8}, // sent third, executed first
-	}
-
-	// Send the transactions in parallel since otherwise they are admitted sequentially
-	var results []horizon.Transaction
-	var resultsMx sync.Mutex
-	var wg sync.WaitGroup
-	wg.Add(len(seqs))
-	for _, s := range seqs {
-		sLocal := s
-		go func() {
-			params := buildTXParams(master, masterAccount, sLocal.seq)
-			if sLocal.minSeq > 0 {
-				params.Preconditions.MinSequenceNumber = &sLocal.minSeq
-			}
-			result := itest.MustSubmitTransaction(master, params)
-			resultsMx.Lock()
-			results = append(results, result)
-			resultsMx.Unlock()
-			wg.Done()
-		}()
-		// Space out requests to ensure the queue receives the transactions
-		// in the planned order
-		time.Sleep(time.Millisecond * 50)
-	}
-	wg.Wait()
-
-	tt.Len(results, len(seqs))
-}
 
 func TestTransactionPreconditionsTimeBounds(t *testing.T) {
 	tt := assert.New(t)
@@ -120,20 +50,11 @@ func TestTransactionPreconditionsTimeBounds(t *testing.T) {
 	txHistory, err := itest.Client().TransactionDetail(tx.Hash)
 	assert.NoError(t, err)
 
-	// Check that the deprecated string datetime fields match the new UNIX
-	// timestamp fields.
-	deprecatedHistoryMinTime, err := time.Parse(time.RFC3339, txHistory.ValidAfter)
-	assert.NoError(t, err)
-	deprecatedHistoryMaxTime, err := time.Parse(time.RFC3339, txHistory.ValidBefore)
-	assert.NoError(t, err)
-
 	historyMinTime, err := strconv.ParseInt(txHistory.Preconditions.TimeBounds.MinTime, 10, 64)
 	assert.NoError(t, err)
 	historyMaxTime, err := strconv.ParseInt(txHistory.Preconditions.TimeBounds.MaxTime, 10, 64)
 	assert.NoError(t, err)
 
-	assert.Equal(t, historyMinTime, deprecatedHistoryMinTime.UTC().Unix())
-	assert.Equal(t, historyMaxTime, deprecatedHistoryMaxTime.UTC().Unix())
 	assert.Equal(t, historyMinTime, txParams.Preconditions.TimeBounds.MinTime)
 	assert.Equal(t, historyMaxTime, txParams.Preconditions.TimeBounds.MaxTime)
 }
@@ -289,7 +210,7 @@ func TestTransactionPreconditionsMinSequenceNumberLedgerGap(t *testing.T) {
 	txParams := buildTXParams(master, masterAccount, currentAccountSeq+1)
 
 	// this txsub will error because the tx preconditions require a min sequence gap
-	// which has been set 10000 sequnce numbers greater than the current difference between
+	// which has been set 10000 sequence numbers greater than the current difference between
 	// network ledger sequence and account sequnece numbers
 	txParams.Preconditions.MinSequenceNumberLedgerGap = uint32(int64(networkLedger) - currentAccountSeq + 10000)
 	_, err = itest.SubmitMultiSigTransaction([]*keypair.Full{master}, txParams)
@@ -351,7 +272,7 @@ func TestTransactionWithoutPreconditions(t *testing.T) {
 
 	// Taken from txnbuild.concatSignatures
 	h, err := network.HashTransactionInEnvelope(envelope,
-		integration.StandaloneNetworkPassphrase)
+		itest.Config().NetworkPassphrase)
 	tt.NoError(err)
 
 	sig, err := master.SignDecorated(h[:])
@@ -383,11 +304,11 @@ func TestTransactionPreconditionsEdgeCases(t *testing.T) {
 
 	maxMinSeq := int64(math.MaxInt64)
 	preconditionTests := []txnbuild.Preconditions{
-		{LedgerBounds: &txnbuild.LedgerBounds{1, 0}},
-		{LedgerBounds: &txnbuild.LedgerBounds{0, math.MaxUint32}},
-		{LedgerBounds: &txnbuild.LedgerBounds{math.MaxUint32, 1}},
+		{LedgerBounds: &txnbuild.LedgerBounds{MinLedger: 1, MaxLedger: 0}},
+		{LedgerBounds: &txnbuild.LedgerBounds{MinLedger: 0, MaxLedger: math.MaxUint32}},
+		{LedgerBounds: &txnbuild.LedgerBounds{MinLedger: math.MaxUint32, MaxLedger: 1}},
 		{
-			LedgerBounds: &txnbuild.LedgerBounds{math.MaxUint32, 1},
+			LedgerBounds: &txnbuild.LedgerBounds{MinLedger: math.MaxUint32, MaxLedger: 1},
 			ExtraSigners: []string{},
 		},
 		{

@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/guregu/null"
+
 	"github.com/stellar/go/services/horizon/internal/db2"
 	"github.com/stellar/go/services/horizon/internal/test"
 )
@@ -95,12 +96,12 @@ func TestMultipleAccountsForSigner(t *testing.T) {
 	tt.Assert.Equal(int64(1), rowsAffected)
 
 	expected := []AccountSigner{
-		AccountSigner{
+		{
 			Account: account,
 			Signer:  signer,
 			Weight:  weight,
 		},
-		AccountSigner{
+		{
 			Account: anotherAccount,
 			Signer:  signer,
 			Weight:  anotherWeight,
@@ -120,7 +121,7 @@ func TestRemoveNonExistentAccountSigner(t *testing.T) {
 
 	account := "GA5WBPYA5Y4WAEHXWR2UKO2UO4BUGHUQ74EUPKON2QHV4WRHOIRNKKH3"
 	signer := "GC23QF2HUE52AMXUFUH3AYJAXXGXXV2VHXYYR6EYXETPKDXZSAW67XO5"
-	rowsAffected, err := q.RemoveAccountSigner(tt.Ctx, account, signer)
+	rowsAffected, err := q.RemoveAccountSigners(tt.Ctx, account, []string{signer})
 	tt.Assert.NoError(err)
 	tt.Assert.Equal(int64(0), rowsAffected)
 }
@@ -147,7 +148,7 @@ func TestRemoveAccountSigner(t *testing.T) {
 	tt.Assert.Len(results, 1)
 	tt.Assert.Equal(expected, results[0])
 
-	rowsAffected, err := q.RemoveAccountSigner(tt.Ctx, account, signer)
+	rowsAffected, err := q.RemoveAccountSigners(tt.Ctx, account, []string{signer})
 	tt.Assert.NoError(err)
 	tt.Assert.Equal(int64(1), rowsAffected)
 

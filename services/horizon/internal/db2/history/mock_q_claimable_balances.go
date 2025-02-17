@@ -36,9 +36,14 @@ func (m *MockQClaimableBalances) RemoveClaimableBalanceClaimants(ctx context.Con
 	return a.Get(0).(int64), a.Error(1)
 }
 
-func (m *MockQClaimableBalances) NewClaimableBalanceClaimantBatchInsertBuilder(maxBatchSize int) ClaimableBalanceClaimantBatchInsertBuilder {
-	a := m.Called(maxBatchSize)
+func (m *MockQClaimableBalances) NewClaimableBalanceClaimantBatchInsertBuilder() ClaimableBalanceClaimantBatchInsertBuilder {
+	a := m.Called()
 	return a.Get(0).(ClaimableBalanceClaimantBatchInsertBuilder)
+}
+
+func (m *MockQClaimableBalances) NewClaimableBalanceBatchInsertBuilder() ClaimableBalanceBatchInsertBuilder {
+	a := m.Called()
+	return a.Get(0).(ClaimableBalanceBatchInsertBuilder)
 }
 
 func (m *MockQClaimableBalances) GetClaimantsByClaimableBalances(ctx context.Context, ids []string) (map[string][]ClaimableBalanceClaimant, error) {

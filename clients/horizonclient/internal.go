@@ -1,13 +1,16 @@
 package horizonclient
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/stellar/go/protocols/horizon"
 	"github.com/stellar/go/support/clock"
 	"github.com/stellar/go/support/errors"
 )
@@ -27,7 +30,11 @@ func decodeResponse(resp *http.Response, object interface{}, horizonUrl string, 
 	}
 	setCurrentServerTime(u.Hostname(), resp.Header["Date"], clock)
 
-	if !(resp.StatusCode >= 200 && resp.StatusCode < 300) {
+	if isStatusCodeAnError(resp.StatusCode) {
+		if isAsyncTxSubRequest(resp) {
+			return decodeAsyncTxSubResponse(resp, object)
+		}
+
 		horizonError := &Error{
 			Response: resp,
 		}
@@ -42,6 +49,42 @@ func decodeResponse(resp *http.Response, object interface{}, horizonUrl string, 
 		return errors.Wrap(err, "error decoding response")
 	}
 	return
+}
+
+func isStatusCodeAnError(statusCode int) bool {
+	return !(statusCode >= 200 && statusCode < 300)
+}
+
+func isAsyncTxSubRequest(resp *http.Response) bool {
+	return resp.Request != nil && resp.Request.URL != nil && resp.Request.URL.Path == "/transactions_async"
+}
+
+func decodeAsyncTxSubResponse(resp *http.Response, object interface{}) error {
+	// We need to read the entire body in order to create 2 decoders later.
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return errors.Wrap(err, "error reading response body")
+	}
+
+	// The first decoder converts the response to AsyncTransactionSubmissionResponse and checks
+	// the hash of the transaction. If the response was not a valid AsyncTransactionSubmissionResponse object,
+	// the hash of the converted object will be empty.
+	asyncRespDecoder := json.NewDecoder(bytes.NewReader(bodyBytes))
+	err = asyncRespDecoder.Decode(&object)
+	if asyncResp, ok := object.(*horizon.AsyncTransactionSubmissionResponse); err == nil && ok && asyncResp.Hash != "" {
+		return nil
+	}
+
+	// Create a new reader for the second decoding. The second decoder decodes to Horizon.Problem object.
+	problemDecoder := json.NewDecoder(bytes.NewReader(bodyBytes))
+	horizonError := Error{
+		Response: resp,
+	}
+	err = problemDecoder.Decode(&horizonError.Problem)
+	if err != nil {
+		return errors.Wrap(err, "error decoding horizon error")
+	}
+	return horizonError
 }
 
 // countParams counts the number of parameters provided

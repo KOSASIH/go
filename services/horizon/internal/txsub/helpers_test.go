@@ -9,6 +9,8 @@ package txsub
 import (
 	"context"
 	"database/sql"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/stellar/go/services/horizon/internal/ledger"
 
 	"github.com/stellar/go/services/horizon/internal/db2/history"
 	"github.com/stretchr/testify/mock"
@@ -30,8 +32,8 @@ type mockDBQ struct {
 	mock.Mock
 }
 
-func (m *mockDBQ) BeginTx(txOpts *sql.TxOptions) error {
-	args := m.Called(txOpts)
+func (m *mockDBQ) BeginTx(ctx context.Context, txOpts *sql.TxOptions) error {
+	args := m.Called(ctx, txOpts)
 	return args.Error(0)
 }
 
@@ -71,4 +73,34 @@ func (m *mockDBQ) PreFilteredTransactionByHash(ctx context.Context, dest interfa
 func (m *mockDBQ) TransactionByHash(ctx context.Context, dest interface{}, hash string) error {
 	args := m.Called(ctx, dest, hash)
 	return args.Error(0)
+}
+
+type MockLedgerState struct {
+	mock.Mock
+}
+
+// CurrentStatus mocks the CurrentStatus method.
+func (m *MockLedgerState) CurrentStatus() ledger.Status {
+	args := m.Called()
+	return args.Get(0).(ledger.Status)
+}
+
+// SetStatus mocks the SetStatus method.
+func (m *MockLedgerState) SetStatus(next ledger.Status) {
+	m.Called(next)
+}
+
+// SetCoreStatus mocks the SetCoreStatus method.
+func (m *MockLedgerState) SetCoreStatus(next ledger.CoreStatus) {
+	m.Called(next)
+}
+
+// SetHorizonStatus mocks the SetHorizonStatus method.
+func (m *MockLedgerState) SetHorizonStatus(next ledger.HorizonStatus) {
+	m.Called(next)
+}
+
+// RegisterMetrics mocks the RegisterMetrics method.
+func (m *MockLedgerState) RegisterMetrics(registry *prometheus.Registry) {
+	m.Called(registry)
 }

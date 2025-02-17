@@ -1,6 +1,7 @@
 package actions
 
 import (
+	"database/sql"
 	"net/http/httptest"
 	"testing"
 
@@ -18,7 +19,12 @@ func TestGetClaimableBalanceByID(t *testing.T) {
 	tt := test.Start(t)
 	defer tt.Finish()
 	test.ResetHorizonDB(t, tt.HorizonDB)
-	q := &history.Q{tt.HorizonSession()}
+	q := &history.Q{SessionInterface: tt.HorizonSession()}
+
+	tt.Assert.NoError(q.BeginTx(tt.Ctx, &sql.TxOptions{}))
+	defer func() {
+		_ = q.Rollback()
+	}()
 
 	accountID := "GC3C4AKRBQLHOJ45U4XG35ESVWRDECWO5XLDGYADO6DPR3L7KIDVUMML"
 	asset := xdr.MustNewCreditAsset("USD", accountID)
@@ -43,19 +49,21 @@ func TestGetClaimableBalanceByID(t *testing.T) {
 		LastModifiedLedger: 123,
 	}
 
-	err = q.UpsertClaimableBalances(tt.Ctx, []history.ClaimableBalance{cBalance})
-	tt.Assert.NoError(err)
+	balanceInsertBuilder := q.NewClaimableBalanceBatchInsertBuilder()
+	tt.Assert.NoError(balanceInsertBuilder.Add(cBalance))
 
-	claimantsInsertBuilder := q.NewClaimableBalanceClaimantBatchInsertBuilder(10)
+	claimantsInsertBuilder := q.NewClaimableBalanceClaimantBatchInsertBuilder()
 	for _, claimant := range cBalance.Claimants {
 		claimant := history.ClaimableBalanceClaimant{
 			BalanceID:          cBalance.BalanceID,
 			Destination:        claimant.Destination,
 			LastModifiedLedger: cBalance.LastModifiedLedger,
 		}
-		err = claimantsInsertBuilder.Add(tt.Ctx, claimant)
-		tt.Assert.NoError(err)
+		tt.Assert.NoError(claimantsInsertBuilder.Add(claimant))
 	}
+
+	tt.Assert.NoError(balanceInsertBuilder.Exec(tt.Ctx))
+	tt.Assert.NoError(claimantsInsertBuilder.Exec(tt.Ctx))
 
 	handler := GetClaimableBalanceByIDHandler{}
 	response, err := handler.GetResource(httptest.NewRecorder(), makeRequest(
@@ -148,6 +156,11 @@ func TestGetClaimableBalances(t *testing.T) {
 	test.ResetHorizonDB(t, tt.HorizonDB)
 	q := &history.Q{tt.HorizonSession()}
 
+	tt.Assert.NoError(q.BeginTx(tt.Ctx, &sql.TxOptions{}))
+	defer func() {
+		_ = q.Rollback()
+	}()
+
 	entriesMeta := []struct {
 		id        xdr.Hash
 		accountID string
@@ -187,25 +200,25 @@ func TestGetClaimableBalances(t *testing.T) {
 		hCBs = append(hCBs, cb)
 	}
 
-	err := q.UpsertClaimableBalances(tt.Ctx, hCBs)
-	tt.Assert.NoError(err)
+	balanceInsertbuilder := q.NewClaimableBalanceBatchInsertBuilder()
 
-	claimantsInsertBuilder := q.NewClaimableBalanceClaimantBatchInsertBuilder(10)
+	claimantsInsertBuilder := q.NewClaimableBalanceClaimantBatchInsertBuilder()
 
 	for _, cBalance := range hCBs {
+		tt.Assert.NoError(balanceInsertbuilder.Add(cBalance))
+
 		for _, claimant := range cBalance.Claimants {
 			claimant := history.ClaimableBalanceClaimant{
 				BalanceID:          cBalance.BalanceID,
 				Destination:        claimant.Destination,
 				LastModifiedLedger: cBalance.LastModifiedLedger,
 			}
-			err = claimantsInsertBuilder.Add(tt.Ctx, claimant)
-			tt.Assert.NoError(err)
+			tt.Assert.NoError(claimantsInsertBuilder.Add(claimant))
 		}
 	}
 
-	err = claimantsInsertBuilder.Exec(tt.Ctx)
-	tt.Assert.NoError(err)
+	tt.Assert.NoError(balanceInsertbuilder.Exec(tt.Ctx))
+	tt.Assert.NoError(claimantsInsertBuilder.Exec(tt.Ctx))
 
 	handler := GetClaimableBalancesHandler{}
 	response, err := handler.GetResourcePage(httptest.NewRecorder(), makeRequest(
@@ -284,11 +297,9 @@ func TestGetClaimableBalances(t *testing.T) {
 	tt.Assert.NoError(err)
 	tt.Assert.Len(response, 0)
 
-	// new claimable balances are ingest and one of them updated, they should appear in the next pages
-	cbToBeUpdated := hCBs[3]
-	cbToBeUpdated.Sponsor = null.StringFrom("GC3C4AKRBQLHOJ45U4XG35ESVWRDECWO5XLDGYADO6DPR3L7KIDVUMML")
-	cbToBeUpdated.LastModifiedLedger = 1238
-	q.UpsertClaimableBalances(tt.Ctx, []history.ClaimableBalance{cbToBeUpdated})
+	// new claimable balances are ingested, they should appear in the next pages
+	balanceInsertbuilder = q.NewClaimableBalanceBatchInsertBuilder()
+	claimantsInsertBuilder = q.NewClaimableBalanceClaimantBatchInsertBuilder()
 
 	entriesMeta = []struct {
 		id        xdr.Hash
@@ -310,29 +321,26 @@ func TestGetClaimableBalances(t *testing.T) {
 		},
 	}
 
-	hCBs = nil
 	for _, e := range entriesMeta {
 		entry := buildClaimableBalance(tt, e.id, e.accountID, e.ledger, e.asset)
 		hCBs = append(hCBs, entry)
 	}
 
-	err = q.UpsertClaimableBalances(tt.Ctx, hCBs)
-	tt.Assert.NoError(err)
+	for _, cBalance := range hCBs[4:] {
+		tt.Assert.NoError(balanceInsertbuilder.Add(cBalance))
 
-	for _, cBalance := range hCBs {
 		for _, claimant := range cBalance.Claimants {
 			claimant := history.ClaimableBalanceClaimant{
 				BalanceID:          cBalance.BalanceID,
 				Destination:        claimant.Destination,
 				LastModifiedLedger: cBalance.LastModifiedLedger,
 			}
-			err = claimantsInsertBuilder.Add(tt.Ctx, claimant)
-			tt.Assert.NoError(err)
+			tt.Assert.NoError(claimantsInsertBuilder.Add(claimant))
 		}
 	}
 
-	err = claimantsInsertBuilder.Exec(tt.Ctx)
-	tt.Assert.NoError(err)
+	tt.Assert.NoError(balanceInsertbuilder.Exec(tt.Ctx))
+	tt.Assert.NoError(claimantsInsertBuilder.Exec(tt.Ctx))
 
 	response, err = handler.GetResourcePage(httptest.NewRecorder(), makeRequest(
 		t,
@@ -358,7 +366,7 @@ func TestGetClaimableBalances(t *testing.T) {
 	tt.Assert.Len(response, 2)
 
 	// response should be the first 2 elements of entries
-	for i, entry := range hCBs {
+	for i, entry := range hCBs[4:] {
 		tt.Assert.Equal(entry.BalanceID, response[i].(protocol.ClaimableBalance).BalanceID)
 	}
 
@@ -367,21 +375,6 @@ func TestGetClaimableBalances(t *testing.T) {
 		map[string]string{
 			"limit":  "2",
 			"cursor": response[1].(protocol.ClaimableBalance).PagingToken(),
-		},
-		map[string]string{},
-		q,
-	))
-
-	tt.Assert.NoError(err)
-	tt.Assert.Len(response, 1)
-
-	tt.Assert.Equal(cbToBeUpdated.BalanceID, response[0].(protocol.ClaimableBalance).BalanceID)
-
-	response, err = handler.GetResourcePage(httptest.NewRecorder(), makeRequest(
-		t,
-		map[string]string{
-			"limit":  "2",
-			"cursor": response[0].(protocol.ClaimableBalance).PagingToken(),
 		},
 		map[string]string{},
 		q,
@@ -404,9 +397,9 @@ func TestGetClaimableBalances(t *testing.T) {
 	tt.Assert.NoError(err)
 	tt.Assert.Len(response, 2)
 
-	tt.Assert.Equal(cbToBeUpdated.BalanceID, response[0].(protocol.ClaimableBalance).BalanceID)
+	tt.Assert.Equal(hCBs[5].BalanceID, response[0].(protocol.ClaimableBalance).BalanceID)
 
-	tt.Assert.Equal(hCBs[1].BalanceID, response[1].(protocol.ClaimableBalance).BalanceID)
+	tt.Assert.Equal(hCBs[4].BalanceID, response[1].(protocol.ClaimableBalance).BalanceID)
 
 	response, err = handler.GetResourcePage(httptest.NewRecorder(), makeRequest(
 		t,
@@ -492,7 +485,7 @@ func TestGetClaimableBalances(t *testing.T) {
 	))
 
 	tt.Assert.NoError(err)
-	tt.Assert.Len(response, 3)
+	tt.Assert.Len(response, 2)
 	for _, resource := range response {
 		tt.Assert.Equal(
 			"GC3C4AKRBQLHOJ45U4XG35ESVWRDECWO5XLDGYADO6DPR3L7KIDVUMML",

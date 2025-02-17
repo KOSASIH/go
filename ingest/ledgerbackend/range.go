@@ -46,6 +46,18 @@ func (r Range) String() string {
 	return fmt.Sprintf("[%d,latest)", r.from)
 }
 
+func (r Range) Bounded() bool {
+	return r.bounded
+}
+
+func (r Range) To() uint32 {
+	return r.to
+}
+
+func (r Range) From() uint32 {
+	return r.from
+}
+
 func (r Range) Contains(other Range) bool {
 	if r.bounded && !other.bounded {
 		return false

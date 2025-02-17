@@ -270,10 +270,10 @@ type bintree struct {
 }
 
 var _bintree = &bintree{nil, map[string]*bintree{
-	"migrations": &bintree{nil, map[string]*bintree{
-		"2021-05-05.0.initial.sql":             &bintree{migrations202105050InitialSql, map[string]*bintree{}},
-		"2021-05-18.0.accounts-kyc-status.sql": &bintree{migrations202105180AccountsKycStatusSql, map[string]*bintree{}},
-		"2021-06-08.0.pending-kyc-status.sql":  &bintree{migrations202106080PendingKycStatusSql, map[string]*bintree{}},
+	"migrations": {nil, map[string]*bintree{
+		"2021-05-05.0.initial.sql":             {migrations202105050InitialSql, map[string]*bintree{}},
+		"2021-05-18.0.accounts-kyc-status.sql": {migrations202105180AccountsKycStatusSql, map[string]*bintree{}},
+		"2021-06-08.0.pending-kyc-status.sql":  {migrations202106080PendingKycStatusSql, map[string]*bintree{}},
 	}},
 }}
 

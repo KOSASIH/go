@@ -88,7 +88,7 @@ func TestPaymentRoundtrip(t *testing.T) {
 		Amount:        "10.0000000",
 		Asset:         NativeAsset{},
 	}
-	testOperationsMarshallingRoundtrip(t, []Operation{&payment}, false)
+	testOperationsMarshalingRoundtrip(t, []Operation{&payment}, false)
 
 	// with muxed accounts
 	payment = Payment{
@@ -97,5 +97,5 @@ func TestPaymentRoundtrip(t *testing.T) {
 		Amount:        "10.0000000",
 		Asset:         NativeAsset{},
 	}
-	testOperationsMarshallingRoundtrip(t, []Operation{&payment}, true)
+	testOperationsMarshalingRoundtrip(t, []Operation{&payment}, true)
 }

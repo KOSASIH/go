@@ -23,6 +23,7 @@ type TransactionQuery struct {
 
 // GetTransactionByHashHandler is the action handler for the end-point returning a transaction.
 type GetTransactionByHashHandler struct {
+	SkipTxMeta bool
 }
 
 // GetResource returns a transaction page.
@@ -49,7 +50,7 @@ func (handler GetTransactionByHashHandler) GetResource(w HeaderWriter, r *http.R
 		return resource, errors.Wrap(err, "loading transaction record")
 	}
 
-	if err = resourceadapter.PopulateTransaction(ctx, qp.TransactionHash, &resource, record); err != nil {
+	if err = resourceadapter.PopulateTransaction(ctx, qp.TransactionHash, &resource, record, handler.SkipTxMeta); err != nil {
 		return resource, errors.Wrap(err, "could not populate transaction")
 	}
 	return resource, nil
@@ -90,6 +91,7 @@ func (qp TransactionsQuery) Validate() error {
 // GetTransactionsHandler is the action handler for all end-points returning a list of transactions.
 type GetTransactionsHandler struct {
 	LedgerState *ledger.State
+	SkipTxMeta  bool
 }
 
 // GetResourcePage returns a page of transactions.
@@ -101,7 +103,7 @@ func (handler GetTransactionsHandler) GetResourcePage(w HeaderWriter, r *http.Re
 		return nil, err
 	}
 
-	err = validateCursorWithinHistory(handler.LedgerState, pq)
+	err = validateAndAdjustCursor(handler.LedgerState, &pq)
 	if err != nil {
 		return nil, err
 	}
@@ -117,7 +119,7 @@ func (handler GetTransactionsHandler) GetResourcePage(w HeaderWriter, r *http.Re
 		return nil, err
 	}
 
-	records, err := loadTransactionRecords(ctx, historyQ, qp, pq)
+	records, err := loadTransactionRecords(ctx, historyQ, qp, pq, handler.LedgerState.CurrentStatus().HistoryElder)
 	if err != nil {
 		return nil, errors.Wrap(err, "loading transaction records")
 	}
@@ -126,7 +128,7 @@ func (handler GetTransactionsHandler) GetResourcePage(w HeaderWriter, r *http.Re
 
 	for _, record := range records {
 		var res horizon.Transaction
-		err = resourceadapter.PopulateTransaction(ctx, record.TransactionHash, &res, record)
+		err = resourceadapter.PopulateTransaction(ctx, record.TransactionHash, &res, record, handler.SkipTxMeta)
 		if err != nil {
 			return nil, errors.Wrap(err, "could not populate transaction")
 		}
@@ -139,7 +141,7 @@ func (handler GetTransactionsHandler) GetResourcePage(w HeaderWriter, r *http.Re
 // loadTransactionRecords returns a slice of transaction records of an
 // account/ledger identified by accountID/ledgerID based on pq and
 // includeFailedTx.
-func loadTransactionRecords(ctx context.Context, hq *history.Q, qp TransactionsQuery, pq db2.PageQuery) ([]history.Transaction, error) {
+func loadTransactionRecords(ctx context.Context, hq *history.Q, qp TransactionsQuery, pq db2.PageQuery, oldestLedger int32) ([]history.Transaction, error) {
 	var records []history.Transaction
 
 	txs := hq.Transactions()
@@ -158,7 +160,7 @@ func loadTransactionRecords(ctx context.Context, hq *history.Q, qp TransactionsQ
 		txs.IncludeFailed()
 	}
 
-	err := txs.Page(pq).Select(ctx, &records)
+	err := txs.Page(pq, oldestLedger).Select(ctx, &records)
 	if err != nil {
 		return nil, errors.Wrap(err, "executing transaction records query")
 	}
@@ -172,7 +174,7 @@ func loadTransactionRecords(ctx context.Context, hq *history.Q, qp TransactionsQ
 			var resultXDR xdr.TransactionResult
 			err = xdr.SafeUnmarshalBase64(t.TxResult, &resultXDR)
 			if err != nil {
-				return nil, errors.Wrap(err, "unmarshalling tx result")
+				return nil, errors.Wrap(err, "unmarshaling tx result")
 			}
 
 			if !resultXDR.Successful() {

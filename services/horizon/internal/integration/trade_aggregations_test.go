@@ -272,14 +272,14 @@ func TestTradeAggregations(t *testing.T) {
 	for _, scenario := range scenarios {
 		t.Run(scenario.name, func(t *testing.T) {
 			// Run each in a txn so the ids don't conflict.
-			assert.NoError(t, historyQ.Begin())
+			assert.NoError(t, historyQ.Begin(ctx))
 			defer func() {
 				assert.NoError(t, historyQ.Rollback())
 			}()
 
-			batch := historyQ.NewTradeBatchInsertBuilder(1000)
-			batch.Add(ctx, scenario.trades...)
-			assert.NoError(t, batch.Exec(ctx))
+			batch := historyQ.NewTradeBatchInsertBuilder()
+			assert.NoError(t, batch.Add(scenario.trades...))
+			assert.NoError(t, batch.Exec(ctx, historyQ))
 
 			// Rebuild the aggregates.
 			for _, trade := range scenario.trades {

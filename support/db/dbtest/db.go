@@ -118,7 +118,7 @@ func checkReadOnly(t testing.TB, DSN string) {
 	require.NoError(t, err)
 	defer conn.Close()
 
-	tx, err := conn.BeginTx(context.Background(), &sql.TxOptions{Isolation: sql.LevelSerializable})
+	tx, err := conn.BeginTx(context.Background(), &sql.TxOptions{})
 	require.NoError(t, err)
 	defer tx.Rollback()
 
@@ -127,6 +127,14 @@ func checkReadOnly(t testing.TB, DSN string) {
 
 	if !rows.Next() {
 		_, err = tx.Exec("CREATE ROLE user_ro WITH LOGIN PASSWORD 'user_ro';")
+		if err != nil {
+			// Handle race condition by ignoring the error if it's a duplicate key violation or duplicate object error
+			if pqErr, ok := err.(*pq.Error); ok && (pqErr.Code == "23505" || pqErr.Code == "42710") {
+				return
+			} else if ok {
+				t.Logf("pq error code: %s", pqErr.Code)
+			}
+		}
 		require.NoError(t, err)
 	}
 
@@ -150,9 +158,13 @@ func Postgres(t testing.TB) *DB {
 	if len(pgUser) == 0 {
 		pgUser = "postgres"
 	}
+	pgPwd := os.Getenv("PGPASSWORD")
+	if len(pgPwd) == 0 {
+		pgPwd = "postgres"
+	}
 
-	postgresDSN := fmt.Sprintf("postgres://%s@localhost/?sslmode=disable", pgUser)
-	result.DSN = fmt.Sprintf("postgres://%s@localhost/%s?sslmode=disable&timezone=UTC", pgUser, result.dbName)
+	postgresDSN := fmt.Sprintf("postgres://%s:%s@localhost/?sslmode=disable", pgUser, pgPwd)
+	result.DSN = fmt.Sprintf("postgres://%s:%s@localhost/%s?sslmode=disable&timezone=UTC", pgUser, pgPwd, result.dbName)
 	result.RO_DSN = fmt.Sprintf("postgres://%s:%s@localhost/%s?sslmode=disable&timezone=UTC", "user_ro", "user_ro", result.dbName)
 
 	execStatement(t, fmt.Sprintf("CREATE DATABASE %s;", result.dbName), postgresDSN)

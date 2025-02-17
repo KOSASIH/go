@@ -5,16 +5,15 @@ import (
 	"net/http"
 	"runtime"
 
-	"github.com/stellar/go/services/horizon/internal/paths"
-
 	"github.com/getsentry/raven-go"
 	"github.com/prometheus/client_golang/prometheus"
+
 	"github.com/stellar/go/exp/orderbook"
 	"github.com/stellar/go/services/horizon/internal/db2/history"
 	"github.com/stellar/go/services/horizon/internal/ingest"
+	"github.com/stellar/go/services/horizon/internal/paths"
 	"github.com/stellar/go/services/horizon/internal/simplepath"
 	"github.com/stellar/go/services/horizon/internal/txsub"
-	"github.com/stellar/go/services/horizon/internal/txsub/sequence"
 	"github.com/stellar/go/support/db"
 	"github.com/stellar/go/support/log"
 )
@@ -46,38 +45,29 @@ func mustInitHorizonDB(app *App) {
 			log.Fatalf("max open connections to horizon db must be greater than %d", ingest.MaxDBConnections)
 		}
 	}
+	serverSidePGTimeoutConfigs := []db.ClientConfig{
+		db.StatementTimeout(app.config.ConnectionTimeout),
+		db.IdleTransactionTimeout(app.config.ConnectionTimeout),
+	}
 
 	if app.config.RoDatabaseURL == "" {
-		var clientConfigs []db.ClientConfig
-		if !app.config.Ingest {
-			// if we are not ingesting then we don't expect to have long db queries / transactions
-			clientConfigs = append(
-				clientConfigs,
-				db.StatementTimeout(app.config.ConnectionTimeout),
-				db.IdleTransactionTimeout(app.config.ConnectionTimeout),
-			)
-		}
 		app.historyQ = &history.Q{mustNewDBSession(
 			db.HistorySubservice,
 			app.config.DatabaseURL,
 			maxIdle,
 			maxOpen,
 			app.prometheusRegistry,
-			clientConfigs...,
+			serverSidePGTimeoutConfigs...,
 		)}
 	} else {
 		// If RO set, use it for all DB queries
-		roClientConfigs := []db.ClientConfig{
-			db.StatementTimeout(app.config.ConnectionTimeout),
-			db.IdleTransactionTimeout(app.config.ConnectionTimeout),
-		}
 		app.historyQ = &history.Q{mustNewDBSession(
 			db.HistorySubservice,
 			app.config.RoDatabaseURL,
 			maxIdle,
 			maxOpen,
 			app.prometheusRegistry,
-			roClientConfigs...,
+			serverSidePGTimeoutConfigs...,
 		)}
 
 		app.primaryHistoryQ = &history.Q{mustNewDBSession(
@@ -86,38 +76,38 @@ func mustInitHorizonDB(app *App) {
 			maxIdle,
 			maxOpen,
 			app.prometheusRegistry,
+			serverSidePGTimeoutConfigs...,
 		)}
 	}
 }
 
 func initIngester(app *App) {
 	var err error
-	var coreSession db.SessionInterface
-	if !app.config.EnableCaptiveCoreIngestion {
-		coreSession = mustNewDBSession(
-			db.CoreSubservice, app.config.StellarCoreDatabaseURL, ingest.MaxDBConnections, ingest.MaxDBConnections, app.prometheusRegistry)
-	}
 	app.ingester, err = ingest.NewSystem(ingest.Config{
-		CoreSession: coreSession,
 		HistorySession: mustNewDBSession(
 			db.IngestSubservice, app.config.DatabaseURL, ingest.MaxDBConnections, ingest.MaxDBConnections, app.prometheusRegistry,
 		),
-		NetworkPassphrase:            app.config.NetworkPassphrase,
-		HistoryArchiveURLs:           app.config.HistoryArchiveURLs,
-		CheckpointFrequency:          app.config.CheckpointFrequency,
-		StellarCoreURL:               app.config.StellarCoreURL,
-		StellarCoreCursor:            app.config.CursorName,
-		CaptiveCoreBinaryPath:        app.config.CaptiveCoreBinaryPath,
-		CaptiveCoreStoragePath:       app.config.CaptiveCoreStoragePath,
-		CaptiveCoreConfigUseDB:       app.config.CaptiveCoreConfigUseDB,
-		CaptiveCoreToml:              app.config.CaptiveCoreToml,
-		RemoteCaptiveCoreURL:         app.config.RemoteCaptiveCoreURL,
-		EnableCaptiveCore:            app.config.EnableCaptiveCoreIngestion,
-		DisableStateVerification:     app.config.IngestDisableStateVerification,
-		EnableReapLookupTables:       app.config.HistoryRetentionCount > 0,
-		EnableExtendedLogLedgerStats: app.config.IngestEnableExtendedLogLedgerStats,
-		RoundingSlippageFilter:       app.config.RoundingSlippageFilter,
-		EnableIngestionFiltering:     app.config.EnableIngestionFiltering,
+		NetworkPassphrase:                    app.config.NetworkPassphrase,
+		HistoryArchiveURLs:                   app.config.HistoryArchiveURLs,
+		HistoryArchiveCaching:                app.config.HistoryArchiveCaching,
+		CheckpointFrequency:                  app.config.CheckpointFrequency,
+		StellarCoreURL:                       app.config.StellarCoreURL,
+		CaptiveCoreBinaryPath:                app.config.CaptiveCoreBinaryPath,
+		CaptiveCoreStoragePath:               app.config.CaptiveCoreStoragePath,
+		CaptiveCoreConfigUseDB:               app.config.CaptiveCoreConfigUseDB,
+		CaptiveCoreToml:                      app.config.CaptiveCoreToml,
+		DisableStateVerification:             app.config.IngestDisableStateVerification,
+		StateVerificationCheckpointFrequency: uint32(app.config.IngestStateVerificationCheckpointFrequency),
+		StateVerificationTimeout:             app.config.IngestStateVerificationTimeout,
+		ReapLookupTables:                     app.config.ReapLookupTables && app.config.HistoryRetentionCount > 0,
+		EnableExtendedLogLedgerStats:         app.config.IngestEnableExtendedLogLedgerStats,
+		RoundingSlippageFilter:               app.config.RoundingSlippageFilter,
+		SkipTxmeta:                           app.config.SkipTxmeta,
+		ReapConfig: ingest.ReapConfig{
+			Frequency:      app.config.ReapFrequency,
+			RetentionCount: uint32(app.config.HistoryRetentionCount),
+			BatchSize:      uint32(app.config.HistoryRetentionReapCount),
+		},
 	})
 
 	if err != nil {
@@ -237,11 +227,11 @@ func initWebMetrics(app *App) {
 
 func initSubmissionSystem(app *App) {
 	app.submitter = &txsub.System{
-		Pending:         txsub.NewDefaultSubmissionList(),
-		Submitter:       txsub.NewDefaultSubmitter(http.DefaultClient, app.config.StellarCoreURL),
-		SubmissionQueue: sequence.NewManager(),
+		Pending:   txsub.NewDefaultSubmissionList(),
+		Submitter: txsub.NewDefaultSubmitter(http.DefaultClient, app.config.StellarCoreURL, app.prometheusRegistry),
 		DB: func(ctx context.Context) txsub.HorizonDB {
 			return &history.Q{SessionInterface: app.HorizonSession()}
 		},
+		LedgerState: app.ledgerState,
 	}
 }

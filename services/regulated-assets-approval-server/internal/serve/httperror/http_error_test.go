@@ -36,5 +36,5 @@ func TestParseHorizonError(t *testing.T) {
 		},
 	}
 	err = ParseHorizonError(horizonError)
-	require.EqualError(t, err, "error submitting transaction: problem: bad_request, &{TransactionCode:tx_code_here InnerTransactionCode: OperationCodes:[op_success op_bad_auth]}\n: horizon error: \"Bad Request\" (tx_code_here, op_success, op_bad_auth) - check horizon.Error.Problem for more information")
+	require.EqualError(t, err, "error submitting transaction: problem: bad_request. full details: , &{TransactionCode:tx_code_here InnerTransactionCode: OperationCodes:[op_success op_bad_auth]}\n: horizon error: \"Bad Request\" (tx_code_here, op_success, op_bad_auth) - check horizon.Error.Problem for more information")
 }

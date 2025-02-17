@@ -4,6 +4,9 @@ import (
 	"encoding/base64"
 	"testing"
 
+	"github.com/stellar/go/gxdr"
+	"github.com/stellar/go/randxdr"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -37,4 +40,22 @@ func TestTrimRightZeros(t *testing.T) {
 	require.Equal(t, []byte{0x1, 0x2}, trimRightZeros([]byte{0x1, 0x2, 0x0, 0x0}))
 	require.Equal(t, []byte{0x0, 0x2}, trimRightZeros([]byte{0x0, 0x2, 0x0, 0x0}))
 	require.Equal(t, []byte{0x0, 0x2, 0x0, 0x1}, trimRightZeros([]byte{0x0, 0x2, 0x0, 0x1, 0x0}))
+}
+
+func TestLedgerKeyEqualsCoverage(t *testing.T) {
+	gen := randxdr.NewGenerator()
+	for i := 0; i < 10000; i++ {
+		ledgerKey := LedgerKey{}
+
+		shape := &gxdr.LedgerKey{}
+		gen.Next(
+			shape,
+			[]randxdr.Preset{},
+		)
+		assert.NoError(t, gxdr.Convert(shape, &ledgerKey))
+
+		clonedLedgerKey := LedgerKey{}
+		assert.NoError(t, gxdr.Convert(shape, &clonedLedgerKey))
+		assert.True(t, ledgerKey.Equals(clonedLedgerKey))
+	}
 }

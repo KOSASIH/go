@@ -4,6 +4,7 @@ package codes
 
 import (
 	"github.com/go-errors/errors"
+
 	"github.com/stellar/go/xdr"
 )
 
@@ -78,6 +79,8 @@ func String(code interface{}) (string, error) {
 			return "tx_bad_minseq_age_or_gap", nil
 		case xdr.TransactionResultCodeTxMalformed:
 			return "tx_malformed", nil
+		case xdr.TransactionResultCodeTxSorobanInvalid:
+			return "tx_soroban_invalid", nil
 		}
 	case xdr.OperationResultCode:
 		switch code {
@@ -491,6 +494,43 @@ func String(code interface{}) (string, error) {
 		case xdr.LiquidityPoolWithdrawResultCodeLiquidityPoolWithdrawUnderMinimum:
 			return "op_under_minimum", nil
 		}
+	case xdr.InvokeHostFunctionResultCode:
+		switch code {
+		case xdr.InvokeHostFunctionResultCodeInvokeHostFunctionSuccess:
+			return OpSuccess, nil
+		case xdr.InvokeHostFunctionResultCodeInvokeHostFunctionMalformed:
+			return OpMalformed, nil
+		case xdr.InvokeHostFunctionResultCodeInvokeHostFunctionTrapped:
+			return "function_trapped", nil
+		case xdr.InvokeHostFunctionResultCodeInvokeHostFunctionResourceLimitExceeded:
+			return "resource_limit_exceeded", nil
+		case xdr.InvokeHostFunctionResultCodeInvokeHostFunctionEntryArchived:
+			return "entry_archived", nil
+		case xdr.InvokeHostFunctionResultCodeInvokeHostFunctionInsufficientRefundableFee:
+			return "insufficient_refundable_fee", nil
+		}
+	case xdr.ExtendFootprintTtlResultCode:
+		switch code {
+		case xdr.ExtendFootprintTtlResultCodeExtendFootprintTtlSuccess:
+			return OpSuccess, nil
+		case xdr.ExtendFootprintTtlResultCodeExtendFootprintTtlMalformed:
+			return OpMalformed, nil
+		case xdr.ExtendFootprintTtlResultCodeExtendFootprintTtlResourceLimitExceeded:
+			return "resource_limit_exceeded", nil
+		case xdr.ExtendFootprintTtlResultCodeExtendFootprintTtlInsufficientRefundableFee:
+			return "insufficient_refundable_fee", nil
+		}
+	case xdr.RestoreFootprintResultCode:
+		switch code {
+		case xdr.RestoreFootprintResultCodeRestoreFootprintSuccess:
+			return OpSuccess, nil
+		case xdr.RestoreFootprintResultCodeRestoreFootprintMalformed:
+			return OpMalformed, nil
+		case xdr.RestoreFootprintResultCodeRestoreFootprintResourceLimitExceeded:
+			return "resource_limit_exceeded", nil
+		case xdr.RestoreFootprintResultCodeRestoreFootprintInsufficientRefundableFee:
+			return "insufficient_refundable_fee", nil
+		}
 	}
 
 	return "", errors.New(ErrUnknownCode)
@@ -555,6 +595,12 @@ func ForOperationResult(opr xdr.OperationResult) (string, error) {
 		ic = ir.MustLiquidityPoolDepositResult().Code
 	case xdr.OperationTypeLiquidityPoolWithdraw:
 		ic = ir.MustLiquidityPoolWithdrawResult().Code
+	case xdr.OperationTypeInvokeHostFunction:
+		ic = ir.MustInvokeHostFunctionResult().Code
+	case xdr.OperationTypeExtendFootprintTtl:
+		ic = ir.MustExtendFootprintTtlResult().Code
+	case xdr.OperationTypeRestoreFootprint:
+		ic = ir.MustRestoreFootprintResult().Code
 	}
 
 	return String(ic)

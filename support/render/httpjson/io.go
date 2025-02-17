@@ -24,13 +24,13 @@ func renderToString(data interface{}, pretty bool) ([]byte, error) {
 	return json.Marshal(data)
 }
 
-// Render write data to w, after marshalling to json. The response header is
+// Render write data to w, after marshaling to json. The response header is
 // set based on cType.
 func Render(w http.ResponseWriter, data interface{}, cType contentType) {
 	RenderStatus(w, http.StatusOK, data, cType)
 }
 
-// RenderStatus write data to w, after marshalling to json.
+// RenderStatus write data to w, after marshaling to json.
 // The response header is set based on cType.
 // The response status code is set to the statusCode.
 func RenderStatus(w http.ResponseWriter, statusCode int, data interface{}, cType contentType) {

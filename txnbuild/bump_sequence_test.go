@@ -33,11 +33,11 @@ func TestBumpSequenceRountrip(t *testing.T) {
 		SourceAccount: "GB7BDSZU2Y27LYNLALKKALB52WS2IZWYBDGY6EQBLEED3TJOCVMZRH7H",
 		BumpTo:        10,
 	}
-	testOperationsMarshallingRoundtrip(t, []Operation{&bumpSequence}, false)
+	testOperationsMarshalingRoundtrip(t, []Operation{&bumpSequence}, false)
 
 	bumpSequence = BumpSequence{
 		SourceAccount: "MA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJVAAAAAAAAAAAAAJLK",
 		BumpTo:        10,
 	}
-	testOperationsMarshallingRoundtrip(t, []Operation{&bumpSequence}, true)
+	testOperationsMarshalingRoundtrip(t, []Operation{&bumpSequence}, true)
 }

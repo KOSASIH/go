@@ -4,18 +4,19 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"reflect"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/jmoiron/sqlx"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 
-	"github.com/stellar/go/historyarchive"
 	"github.com/stellar/go/ingest"
 	"github.com/stellar/go/ingest/ledgerbackend"
 	"github.com/stellar/go/services/horizon/internal/db2/history"
-	"github.com/stellar/go/services/horizon/internal/ingest/processors"
 	"github.com/stellar/go/support/db"
 	"github.com/stellar/go/support/errors"
 	logpkg "github.com/stellar/go/support/log"
@@ -79,24 +80,52 @@ func TestCheckVerifyStateVersion(t *testing.T) {
 	)
 }
 
+func TestLedgerEligibleForStateVerification(t *testing.T) {
+	checker := ledgerEligibleForStateVerification(64, 3)
+	for ledger := uint32(1); ledger < 64*6; ledger++ {
+		run := checker(ledger)
+		expected := (ledger+1)%(64*3) == 0
+		assert.Equal(t, expected, run)
+	}
+}
+
 func TestNewSystem(t *testing.T) {
 	config := Config{
-		CoreSession:              &db.Session{DB: &sqlx.DB{}},
 		HistorySession:           &db.Session{DB: &sqlx.DB{}},
 		DisableStateVerification: true,
 		HistoryArchiveURLs:       []string{"https://history.stellar.org/prd/core-live/core_live_001"},
 		CheckpointFrequency:      64,
+		CoreProtocolVersionFn:    func(string) (uint, error) { return 21, nil },
 	}
 
 	sIface, err := NewSystem(config)
 	assert.NoError(t, err)
 	system := sIface.(*system)
 
-	assert.Equal(t, config, system.config)
+	CompareConfigs(t, config, system.config)
 	assert.Equal(t, config.DisableStateVerification, system.disableStateVerification)
 
-	assert.Equal(t, config, system.runner.(*ProcessorRunner).config)
+	CompareConfigs(t, config, system.runner.(*ProcessorRunner).config)
 	assert.Equal(t, system.ctx, system.runner.(*ProcessorRunner).ctx)
+	assert.Equal(t, system.maxLedgerPerFlush, MaxLedgersPerFlush)
+}
+
+// Custom comparator function.This function is needed because structs in Go that contain function fields
+// cannot be directly compared using assert.Equal, so here we compare each individual field, skipping the function fields.
+func CompareConfigs(t *testing.T, expected, actual Config) bool {
+	fields := reflect.TypeOf(expected)
+	for i := 0; i < fields.NumField(); i++ {
+		field := fields.Field(i)
+		if field.Name == "CoreProtocolVersionFn" || field.Name == "CoreBuildVersionFn" {
+			continue
+		}
+		expectedValue := reflect.ValueOf(expected).Field(i).Interface()
+		actualValue := reflect.ValueOf(actual).Field(i).Interface()
+		if !assert.Equal(t, expectedValue, actualValue, field.Name) {
+			return false
+		}
+	}
+	return true
 }
 
 func TestStateMachineRunReturnsUnexpectedTransaction(t *testing.T) {
@@ -105,10 +134,13 @@ func TestStateMachineRunReturnsUnexpectedTransaction(t *testing.T) {
 		historyQ: historyQ,
 		ctx:      context.Background(),
 	}
+	reg := setupMetrics(system)
 
 	historyQ.On("GetTx").Return(&sqlx.Tx{}).Once()
-
 	assert.PanicsWithValue(t, "unexpected transaction", func() {
+		defer func() {
+			assertErrorRestartMetrics(reg, "", "", 0, t)
+		}()
 		system.Run()
 	})
 }
@@ -119,12 +151,17 @@ func TestStateMachineTransition(t *testing.T) {
 		historyQ: historyQ,
 		ctx:      context.Background(),
 	}
+	reg := setupMetrics(system)
 
 	historyQ.On("GetTx").Return(nil).Once()
-	historyQ.On("Begin").Return(errors.New("my error")).Once()
+	historyQ.On("Begin", mock.Anything).Return(errors.New("my error")).Once()
 	historyQ.On("GetTx").Return(&sqlx.Tx{}).Once()
 
 	assert.PanicsWithValue(t, "unexpected transaction", func() {
+		defer func() {
+			// the test triggers error in the first start state exec, so metric is added
+			assertErrorRestartMetrics(reg, "start", "start", 1, t)
+		}()
 		system.Run()
 	})
 }
@@ -136,12 +173,14 @@ func TestContextCancel(t *testing.T) {
 		historyQ: historyQ,
 		ctx:      ctx,
 	}
+	reg := setupMetrics(system)
 
 	historyQ.On("GetTx").Return(nil).Once()
-	historyQ.On("Begin").Return(errors.New("my error")).Once()
+	historyQ.On("Begin", mock.AnythingOfType("*context.cancelCtx")).Return(context.Canceled).Once()
 
 	cancel()
 	assert.NoError(t, system.runStateMachine(startState{}))
+	assertErrorRestartMetrics(reg, "", "", 0, t)
 }
 
 // TestStateMachineRunReturnsErrorWhenNextStateIsShutdownWithError checks if the
@@ -154,20 +193,69 @@ func TestStateMachineRunReturnsErrorWhenNextStateIsShutdownWithError(t *testing.
 		ctx:      context.Background(),
 		historyQ: historyQ,
 	}
+	reg := setupMetrics(system)
 
 	historyQ.On("GetTx").Return(nil).Once()
 
 	err := system.runStateMachine(verifyRangeState{})
 	assert.Error(t, err)
 	assert.EqualError(t, err, "invalid range: [0, 0]")
+	assertErrorRestartMetrics(reg, "verifyrange", "stop", 1, t)
+}
+
+func TestStateMachineRestartEmitsMetric(t *testing.T) {
+	historyQ := &mockDBQ{}
+	ledgerBackend := &mockLedgerBackend{}
+	ctx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	defer func() {
+		cancel()
+		wg.Wait()
+	}()
+
+	system := &system{
+		ctx:           ctx,
+		historyQ:      historyQ,
+		ledgerBackend: ledgerBackend,
+	}
+
+	ledgerBackend.On("IsPrepared", system.ctx, ledgerbackend.UnboundedRange(101)).Return(true, nil)
+	ledgerBackend.On("GetLedger", system.ctx, uint32(101)).Return(xdr.LedgerCloseMeta{
+		V0: &xdr.LedgerCloseMetaV0{
+			LedgerHeader: xdr.LedgerHeaderHistoryEntry{
+				Header: xdr.LedgerHeader{
+					LedgerSeq:      101,
+					LedgerVersion:  xdr.Uint32(MaxSupportedProtocolVersion),
+					BucketListHash: xdr.Hash{1, 2, 3},
+				},
+			},
+		},
+	}, nil)
+
+	reg := setupMetrics(system)
+
+	historyQ.On("GetTx").Return(nil)
+	historyQ.On("Begin", system.ctx).Return(errors.New("stop state machine"))
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		system.runStateMachine(resumeState{latestSuccessfullyProcessedLedger: 100})
+	}()
+
+	assert.EventuallyWithT(t, func(c *assert.CollectT) {
+		// this checks every 50ms up to 10s total, for at least 3 fsm retries based on a db Begin error
+		// this condition should be met as the fsm retries every second.
+		assertErrorRestartMetrics(reg, "resume", "resume", 3, c)
+	}, 10*time.Second, 50*time.Millisecond, "horizon_ingest_errors_total metric was not incremented on a fsm error")
 }
 
 func TestMaybeVerifyStateGetExpStateInvalidError(t *testing.T) {
 	historyQ := &mockDBQ{}
 	system := &system{
-		historyQ:          historyQ,
-		ctx:               context.Background(),
-		checkpointManager: historyarchive.NewCheckpointManager(64),
+		historyQ:                     historyQ,
+		ctx:                          context.Background(),
+		runStateVerificationOnLedger: ledgerEligibleForStateVerification(64, 1),
 	}
 
 	var out bytes.Buffer
@@ -180,11 +268,11 @@ func TestMaybeVerifyStateGetExpStateInvalidError(t *testing.T) {
 	defer func() { log = oldLogger }()
 
 	historyQ.On("GetExpStateInvalid", system.ctx).Return(false, db.ErrCancelled).Once()
-	system.maybeVerifyState(63)
+	system.maybeVerifyState(63, xdr.Hash{})
 	system.wg.Wait()
 
 	historyQ.On("GetExpStateInvalid", system.ctx).Return(false, context.Canceled).Once()
-	system.maybeVerifyState(63)
+	system.maybeVerifyState(63, xdr.Hash{})
 	system.wg.Wait()
 
 	logged := done()
@@ -192,7 +280,7 @@ func TestMaybeVerifyStateGetExpStateInvalidError(t *testing.T) {
 
 	// Ensure state verifier does not start also for any other error
 	historyQ.On("GetExpStateInvalid", system.ctx).Return(false, errors.New("my error")).Once()
-	system.maybeVerifyState(63)
+	system.maybeVerifyState(63, xdr.Hash{})
 	system.wg.Wait()
 
 	historyQ.AssertExpectations(t)
@@ -200,9 +288,9 @@ func TestMaybeVerifyStateGetExpStateInvalidError(t *testing.T) {
 func TestMaybeVerifyInternalDBErrCancelOrContextCanceled(t *testing.T) {
 	historyQ := &mockDBQ{}
 	system := &system{
-		historyQ:          historyQ,
-		ctx:               context.Background(),
-		checkpointManager: historyarchive.NewCheckpointManager(64),
+		historyQ:                     historyQ,
+		ctx:                          context.Background(),
+		runStateVerificationOnLedger: ledgerEligibleForStateVerification(64, 1),
 	}
 
 	var out bytes.Buffer
@@ -218,12 +306,12 @@ func TestMaybeVerifyInternalDBErrCancelOrContextCanceled(t *testing.T) {
 	historyQ.On("Rollback").Return(nil).Twice()
 	historyQ.On("CloneIngestionQ").Return(historyQ).Twice()
 
-	historyQ.On("BeginTx", mock.Anything).Return(db.ErrCancelled).Once()
-	system.maybeVerifyState(63)
+	historyQ.On("BeginTx", mock.Anything, mock.Anything).Return(db.ErrCancelled).Once()
+	system.maybeVerifyState(63, xdr.Hash{})
 	system.wg.Wait()
 
-	historyQ.On("BeginTx", mock.Anything).Return(context.Canceled).Once()
-	system.maybeVerifyState(63)
+	historyQ.On("BeginTx", mock.Anything, mock.Anything).Return(context.Canceled).Once()
+	system.maybeVerifyState(63, xdr.Hash{})
 	system.wg.Wait()
 
 	logged := done()
@@ -232,6 +320,86 @@ func TestMaybeVerifyInternalDBErrCancelOrContextCanceled(t *testing.T) {
 	assert.Len(t, logged, 0)
 
 	historyQ.AssertExpectations(t)
+}
+
+func TestCurrentStateRaceCondition(t *testing.T) {
+	historyQ := &mockDBQ{}
+	s := &system{
+		historyQ: historyQ,
+		ctx:      context.Background(),
+	}
+	reg := setupMetrics(s)
+
+	historyQ.On("GetTx").Return(nil)
+	historyQ.On("Begin", s.ctx).Return(nil)
+	historyQ.On("Rollback").Return(nil)
+	historyQ.On("GetLastLedgerIngest", s.ctx).Return(uint32(1), nil)
+	historyQ.On("GetIngestVersion", s.ctx).Return(CurrentVersion, nil)
+
+	timer := time.NewTimer(2000 * time.Millisecond)
+	getCh := make(chan bool, 1)
+	doneCh := make(chan bool, 1)
+	go func() {
+		var state = buildState{checkpointLedger: 8,
+			skipChecks: true,
+			stop:       true}
+		for range getCh {
+			_ = s.runStateMachine(state)
+		}
+		close(doneCh)
+	}()
+
+loop:
+	for {
+		s.GetCurrentState()
+		select {
+		case <-timer.C:
+			break loop
+		default:
+		}
+		getCh <- true
+	}
+	close(getCh)
+	<-doneCh
+	assertErrorRestartMetrics(reg, "", "", 0, t)
+}
+
+func setupMetrics(system *system) *prometheus.Registry {
+	registry := prometheus.NewRegistry()
+	system.initMetrics()
+	registry.Register(system.Metrics().IngestionErrorCounter)
+	return registry
+}
+
+func assertErrorRestartMetrics(reg *prometheus.Registry, assertCurrentState string, assertNextState string, assertRestartCount float64, t assert.TestingT) {
+	assert := assert.New(t)
+	metrics, err := reg.Gather()
+	assert.NoError(err)
+
+	for _, metricFamily := range metrics {
+		if metricFamily.GetName() == "horizon_ingest_errors_total" {
+			assert.Len(metricFamily.GetMetric(), 1)
+			assert.Equal(metricFamily.GetMetric()[0].GetCounter().GetValue(), assertRestartCount)
+			var metricCurrentState = ""
+			var metricNextState = ""
+			for _, label := range metricFamily.GetMetric()[0].GetLabel() {
+				if label.GetName() == "current_state" {
+					metricCurrentState = label.GetValue()
+				}
+				if label.GetName() == "next_state" {
+					metricNextState = label.GetValue()
+				}
+			}
+
+			assert.Equal(metricCurrentState, assertCurrentState)
+			assert.Equal(metricNextState, assertNextState)
+			return
+		}
+	}
+
+	if assertRestartCount > 0.0 {
+		assert.Fail("horizon_ingest_errors_total metrics were not correct")
+	}
 }
 
 type mockDBQ struct {
@@ -254,13 +422,13 @@ type mockDBQ struct {
 	history.MockQTrustLines
 }
 
-func (m *mockDBQ) Begin() error {
-	args := m.Called()
+func (m *mockDBQ) Begin(ctx context.Context) error {
+	args := m.Called(ctx)
 	return args.Error(0)
 }
 
-func (m *mockDBQ) BeginTx(txOpts *sql.TxOptions) error {
-	args := m.Called(txOpts)
+func (m *mockDBQ) BeginTx(ctx context.Context, txOpts *sql.TxOptions) error {
+	args := m.Called(ctx, txOpts)
 	return args.Error(0)
 }
 
@@ -281,6 +449,31 @@ func (m *mockDBQ) Close() error {
 
 func (m *mockDBQ) Rollback() error {
 	args := m.Called()
+	return args.Error(0)
+}
+
+func (m *mockDBQ) TryStateVerificationLock(ctx context.Context) (bool, error) {
+	args := m.Called(ctx)
+	return args.Get(0).(bool), args.Error(1)
+}
+
+func (m *mockDBQ) TryReaperLock(ctx context.Context) (bool, error) {
+	args := m.Called(ctx)
+	return args.Get(0).(bool), args.Error(1)
+}
+
+func (m *mockDBQ) TryLookupTableReaperLock(ctx context.Context) (bool, error) {
+	args := m.Called(ctx)
+	return args.Get(0).(bool), args.Error(1)
+}
+
+func (m *mockDBQ) GetNextLedgerSequence(ctx context.Context, start uint32) (uint32, bool, error) {
+	args := m.Called(ctx, start)
+	return args.Get(0).(uint32), args.Get(1).(bool), args.Error(2)
+}
+
+func (m *mockDBQ) ElderLedger(ctx context.Context, dest interface{}) error {
+	args := m.Called(ctx, dest)
 	return args.Error(0)
 }
 
@@ -352,38 +545,36 @@ func (m *mockDBQ) TruncateIngestStateTables(ctx context.Context) error {
 	return args.Error(0)
 }
 
-func (m *mockDBQ) DeleteRangeAll(ctx context.Context, start, end int64) error {
+func (m *mockDBQ) DeleteRangeAll(ctx context.Context, start, end int64) (int64, error) {
 	args := m.Called(ctx, start, end)
-	return args.Error(0)
+	return args.Get(0).(int64), args.Error(1)
 }
 
 // Methods from interfaces duplicating methods:
 
-func (m *mockDBQ) NewTransactionParticipantsBatchInsertBuilder(maxBatchSize int) history.TransactionParticipantsBatchInsertBuilder {
-	args := m.Called(maxBatchSize)
+func (m *mockDBQ) NewTransactionParticipantsBatchInsertBuilder() history.TransactionParticipantsBatchInsertBuilder {
+	args := m.Called()
 	return args.Get(0).(history.TransactionParticipantsBatchInsertBuilder)
 }
 
-func (m *mockDBQ) NewOperationParticipantBatchInsertBuilder(maxBatchSize int) history.OperationParticipantBatchInsertBuilder {
-	args := m.Called(maxBatchSize)
-	return args.Get(0).(history.TransactionParticipantsBatchInsertBuilder)
+func (m *mockDBQ) NewOperationParticipantBatchInsertBuilder() history.OperationParticipantBatchInsertBuilder {
+	args := m.Called()
+	return args.Get(0).(history.OperationParticipantBatchInsertBuilder)
 }
 
-func (m *mockDBQ) NewTradeBatchInsertBuilder(maxBatchSize int) history.TradeBatchInsertBuilder {
-	args := m.Called(maxBatchSize)
+func (m *mockDBQ) NewTradeBatchInsertBuilder() history.TradeBatchInsertBuilder {
+	args := m.Called()
 	return args.Get(0).(history.TradeBatchInsertBuilder)
 }
 
-func (m *mockDBQ) ReapLookupTables(ctx context.Context, offsets map[string]int64) (map[string]int64, map[string]int64, error) {
-	args := m.Called(ctx, offsets)
-	var r1, r2 map[string]int64
-	if args.Get(0) != nil {
-		r1 = args.Get(0).(map[string]int64)
-	}
-	if args.Get(1) != nil {
-		r1 = args.Get(1).(map[string]int64)
-	}
-	return r1, r2, args.Error(2)
+func (m *mockDBQ) FindLookupTableRowsToReap(ctx context.Context, table string, batchSize int) ([]int64, int64, error) {
+	args := m.Called(ctx, table, batchSize)
+	return args.Get(0).([]int64), args.Get(1).(int64), args.Error(2)
+}
+
+func (m *mockDBQ) ReapLookupTable(ctx context.Context, table string, ids []int64, offset int64) (int64, error) {
+	args := m.Called(ctx, table, ids, offset)
+	return args.Get(0).(int64), args.Error(1)
 }
 
 func (m *mockDBQ) RebuildTradeAggregationTimes(ctx context.Context, from, to strtime.Millis, roundingSlippageFilter int) error {
@@ -451,11 +642,6 @@ func (m *mockProcessorsRunner) DisableMemoryStatsLogging() {
 	m.Called()
 }
 
-func (m *mockProcessorsRunner) RunGenesisStateIngestion() (ingest.StatsChangeProcessorResults, error) {
-	args := m.Called()
-	return args.Get(0).(ingest.StatsChangeProcessorResults), args.Error(1)
-}
-
 func (m *mockProcessorsRunner) RunHistoryArchiveIngestion(
 	checkpointLedger uint32,
 	skipChecks bool,
@@ -475,17 +661,9 @@ func (m *mockProcessorsRunner) RunAllProcessorsOnLedger(ledger xdr.LedgerCloseMe
 		args.Error(1)
 }
 
-func (m *mockProcessorsRunner) RunTransactionProcessorsOnLedger(ledger xdr.LedgerCloseMeta) (
-	processors.StatsLedgerTransactionProcessorResults,
-	processorsRunDurations,
-	processors.TradeStats,
-	error,
-) {
-	args := m.Called(ledger)
-	return args.Get(0).(processors.StatsLedgerTransactionProcessorResults),
-		args.Get(1).(processorsRunDurations),
-		args.Get(2).(processors.TradeStats),
-		args.Error(3)
+func (m *mockProcessorsRunner) RunTransactionProcessorsOnLedgers(ledgers []xdr.LedgerCloseMeta, execInTx bool) error {
+	args := m.Called(ledgers, execInTx)
+	return args.Error(0)
 }
 
 var _ ProcessorRunnerInterface = (*mockProcessorsRunner)(nil)
@@ -533,13 +711,18 @@ func (m *mockSystem) BuildState(sequence uint32, skipChecks bool) error {
 	return args.Error(0)
 }
 
-func (m *mockSystem) ReingestRange(ledgerRanges []history.LedgerRange, force bool) error {
-	args := m.Called(ledgerRanges, force)
+func (m *mockSystem) ReingestRange(ledgerRanges []history.LedgerRange, force bool, rebuildTradeAgg bool) error {
+	args := m.Called(ledgerRanges, force, rebuildTradeAgg)
 	return args.Error(0)
 }
 
-func (m *mockSystem) BuildGenesisState() error {
+func (m *mockSystem) GetCurrentState() State {
 	args := m.Called()
+	return args.Get(0).(State)
+}
+
+func (m *mockSystem) RebuildTradeAggregationBuckets(fromLedger, toLedger uint32) error {
+	args := m.Called(fromLedger, toLedger)
 	return args.Error(0)
 }
 

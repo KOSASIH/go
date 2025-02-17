@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/guregu/null"
+
 	"github.com/stellar/go/services/horizon/internal/test"
 	"github.com/stellar/go/toid"
 	"github.com/stellar/go/xdr"
@@ -119,7 +120,8 @@ func TestInsertLedger(t *testing.T) {
 	tt.Assert.NoError(err)
 	expectedLedger.LedgerHeaderXDR = null.NewString(ledgerHeaderBase64, true)
 
-	rowsAffected, err := q.InsertLedger(tt.Ctx,
+	ledgerBatch := q.NewLedgerBatchInsertBuilder()
+	err = ledgerBatch.Add(
 		ledgerEntry,
 		12,
 		3,
@@ -128,7 +130,9 @@ func TestInsertLedger(t *testing.T) {
 		int(expectedLedger.ImporterVersion),
 	)
 	tt.Assert.NoError(err)
-	tt.Assert.Equal(rowsAffected, int64(1))
+	tt.Assert.NoError(q.Begin(tt.Ctx))
+	tt.Assert.NoError(ledgerBatch.Exec(tt.Ctx, q.SessionInterface))
+	tt.Assert.NoError(q.Commit())
 
 	err = q.LedgerBySequence(tt.Ctx, &ledgerFromDB, 69859)
 	tt.Assert.NoError(err)
@@ -204,7 +208,8 @@ func insertLedgerWithSequence(tt *test.T, q *Q, seq uint32) {
 	ledgerHeaderBase64, err := xdr.MarshalBase64(ledgerEntry.Header)
 	tt.Assert.NoError(err)
 	expectedLedger.LedgerHeaderXDR = null.NewString(ledgerHeaderBase64, true)
-	rowsAffected, err := q.InsertLedger(tt.Ctx,
+	ledgerBatch := q.NewLedgerBatchInsertBuilder()
+	err = ledgerBatch.Add(
 		ledgerEntry,
 		12,
 		3,
@@ -213,7 +218,9 @@ func insertLedgerWithSequence(tt *test.T, q *Q, seq uint32) {
 		int(expectedLedger.ImporterVersion),
 	)
 	tt.Assert.NoError(err)
-	tt.Assert.Equal(rowsAffected, int64(1))
+	tt.Assert.NoError(q.Begin(tt.Ctx))
+	tt.Assert.NoError(ledgerBatch.Exec(tt.Ctx, q.SessionInterface))
+	tt.Assert.NoError(q.Commit())
 }
 
 func TestGetLedgerGaps(t *testing.T) {
@@ -330,4 +337,54 @@ func TestGetLedgerGaps(t *testing.T) {
 	tt.Assert.NoError(err)
 	expectedGaps = append(expectedGaps, LedgerRange{1001, 1001})
 	tt.Assert.Equal(expectedGaps, gaps)
+}
+
+func TestGetNextLedgerSequence(t *testing.T) {
+	tt := test.Start(t)
+	defer tt.Finish()
+	test.ResetHorizonDB(t, tt.HorizonDB)
+
+	q := &Q{tt.HorizonSession()}
+
+	_, ok, err := q.GetNextLedgerSequence(context.Background(), 0)
+	tt.Assert.NoError(err)
+	tt.Assert.False(ok)
+
+	insertLedgerWithSequence(tt, q, 4)
+	insertLedgerWithSequence(tt, q, 5)
+	insertLedgerWithSequence(tt, q, 6)
+	insertLedgerWithSequence(tt, q, 7)
+
+	insertLedgerWithSequence(tt, q, 99)
+	insertLedgerWithSequence(tt, q, 100)
+	insertLedgerWithSequence(tt, q, 101)
+	insertLedgerWithSequence(tt, q, 102)
+
+	seq, ok, err := q.GetNextLedgerSequence(context.Background(), 0)
+	tt.Assert.NoError(err)
+	tt.Assert.True(ok)
+	tt.Assert.Equal(uint32(4), seq)
+
+	seq, ok, err = q.GetNextLedgerSequence(context.Background(), 4)
+	tt.Assert.NoError(err)
+	tt.Assert.True(ok)
+	tt.Assert.Equal(uint32(5), seq)
+
+	seq, ok, err = q.GetNextLedgerSequence(context.Background(), 10)
+	tt.Assert.NoError(err)
+	tt.Assert.True(ok)
+	tt.Assert.Equal(uint32(99), seq)
+
+	seq, ok, err = q.GetNextLedgerSequence(context.Background(), 101)
+	tt.Assert.NoError(err)
+	tt.Assert.True(ok)
+	tt.Assert.Equal(uint32(102), seq)
+
+	_, ok, err = q.GetNextLedgerSequence(context.Background(), 102)
+	tt.Assert.NoError(err)
+	tt.Assert.False(ok)
+
+	_, ok, err = q.GetNextLedgerSequence(context.Background(), 110)
+	tt.Assert.NoError(err)
+	tt.Assert.False(ok)
 }

@@ -24,7 +24,7 @@ const (
 	//VersionByteSeed is the version byte used for encoded stellar seed
 	VersionByteSeed = 18 << 3 // Base32-encodes to 'S...'
 
-	//VersionByteMuxedAccounts is the version byte used for encoded stellar multiplexed addresses
+	//VersionByteMuxedAccount is the version byte used for encoded stellar multiplexed addresses
 	VersionByteMuxedAccount = 12 << 3 // Base32-encodes to 'M...'
 
 	//VersionByteHashTx is the version byte used for encoded stellar hashTx
@@ -38,6 +38,9 @@ const (
 	//VersionByteSignedPayload is the version byte used for encoding "signed
 	//payload" (CAP-40) signer keys.
 	VersionByteSignedPayload = 15 << 3 // Base-32 encodes to 'P'
+
+	//VersionByteContract is the version byte used for encoded stellar contracts
+	VersionByteContract = 2 << 3 // Base-32 encodes to 'C'
 )
 
 // maxPayloadSize is the maximum length of the payload for all versions. The
@@ -188,7 +191,7 @@ func Version(src string) (VersionByte, error) {
 // is not one of the defined valid version byte constants.
 func checkValidVersionByte(version VersionByte) error {
 	switch version {
-	case VersionByteAccountID, VersionByteMuxedAccount, VersionByteSeed, VersionByteHashTx, VersionByteHashX, VersionByteSignedPayload:
+	case VersionByteAccountID, VersionByteMuxedAccount, VersionByteSeed, VersionByteHashTx, VersionByteHashX, VersionByteSignedPayload, VersionByteContract:
 		return nil
 	default:
 		return ErrInvalidVersionByte

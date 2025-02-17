@@ -183,7 +183,7 @@ func (s *LiquidityPoolsChangeProcessorTestSuiteLedger) TestNewLiquidityPool() {
 			Type:          xdr.LedgerEntryTypeLiquidityPool,
 			LiquidityPool: &lpEntry,
 		},
-		LastModifiedLedgerSeq: lastModifiedLedgerSeq,
+		LastModifiedLedgerSeq: lastModifiedLedgerSeq + 1,
 		Ext: xdr.LedgerEntryExt{
 			V: 1,
 			V1: &xdr.LedgerEntryExtensionV1{
@@ -200,7 +200,7 @@ func (s *LiquidityPoolsChangeProcessorTestSuiteLedger) TestNewLiquidityPool() {
 	})
 	s.Assert().NoError(err)
 
-	postLP := history.LiquidityPool{
+	preLP := history.LiquidityPool{
 		PoolID:         "cafebabedeadbeef000000000000000000000000000000000000000000000000",
 		Type:           xdr.LiquidityPoolTypeLiquidityPoolConstantProduct,
 		Fee:            34,
@@ -218,7 +218,25 @@ func (s *LiquidityPoolsChangeProcessorTestSuiteLedger) TestNewLiquidityPool() {
 		},
 		LastModifiedLedger: 123,
 	}
-	s.mockQ.On("UpsertLiquidityPools", s.ctx, []history.LiquidityPool{postLP}).Return(nil).Once()
+	postLP := history.LiquidityPool{
+		PoolID:         "cafebabedeadbeef000000000000000000000000000000000000000000000000",
+		Type:           xdr.LiquidityPoolTypeLiquidityPoolConstantProduct,
+		Fee:            34,
+		TrustlineCount: 52115,
+		ShareCount:     412241,
+		AssetReserves: []history.LiquidityPoolAssetReserve{
+			{
+				xdr.MustNewCreditAsset("USD", "GC3C4AKRBQLHOJ45U4XG35ESVWRDECWO5XLDGYADO6DPR3L7KIDVUMML"),
+				450,
+			},
+			{
+				xdr.MustNewNativeAsset(),
+				500,
+			},
+		},
+		LastModifiedLedger: 124,
+	}
+	s.mockQ.On("UpsertLiquidityPools", s.ctx, []history.LiquidityPool{preLP, postLP}).Return(nil).Once()
 	s.mockQ.On("CompactLiquidityPools", s.ctx, s.sequence-100).Return(int64(0), nil).Once()
 }
 

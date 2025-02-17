@@ -10,17 +10,21 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/url"
+	"os"
 	"path"
 	"regexp"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
+	fscache "github.com/djherbis/fscache"
 	log "github.com/sirupsen/logrus"
 
 	"github.com/stellar/go/support/errors"
+	supportlog "github.com/stellar/go/support/log"
+	"github.com/stellar/go/support/storage"
 	"github.com/stellar/go/xdr"
 )
 
@@ -37,35 +41,25 @@ type CommandOptions struct {
 	SkipOptional bool
 }
 
-type ConnectOptions struct {
-	Context context.Context
+type ArchiveOptions struct {
+	storage.ConnectOptions
+
+	Logger *supportlog.Entry
 	// NetworkPassphrase defines the expected network of history archive. It is
 	// checked when getting HAS. If network passphrase does not match, error is
 	// returned.
 	NetworkPassphrase string
-	S3Region          string
-	S3Endpoint        string
-	UnsignedRequests  bool
 	// CheckpointFrequency is the number of ledgers between checkpoints
 	// if unset, DefaultCheckpointFrequency will be used
 	CheckpointFrequency uint32
-	// UserAgent is the value of `User-Agent` header. Applicable only for HTTP client.
-	UserAgent string
+	// CachePath controls where/if bucket files are cached on the disk.
+	CachePath string
 }
 
 type Ledger struct {
 	Header            xdr.LedgerHeaderHistoryEntry
 	Transaction       xdr.TransactionHistoryEntry
 	TransactionResult xdr.TransactionHistoryResultEntry
-}
-
-type ArchiveBackend interface {
-	Exists(path string) (bool, error)
-	Size(path string) (int64, error)
-	GetFile(path string) (io.ReadCloser, error)
-	PutFile(path string, in io.ReadCloser) error
-	ListFiles(path string) (chan string, chan error)
-	CanListFiles() bool
 }
 
 type ArchiveInterface interface {
@@ -77,6 +71,7 @@ type ArchiveInterface interface {
 	GetLedgerHeader(chk uint32) (xdr.LedgerHeaderHistoryEntry, error)
 	GetRootHAS() (HistoryArchiveState, error)
 	GetLedgers(start, end uint32) (map[uint32]*Ledger, error)
+	GetLatestLedgerSequence() (uint32, error)
 	GetCheckpointHAS(chk uint32) (HistoryArchiveState, error)
 	PutCheckpointHAS(chk uint32, has HistoryArchiveState, opts *CommandOptions) error
 	PutRootHAS(has HistoryArchiveState, opts *CommandOptions) error
@@ -84,9 +79,10 @@ type ArchiveInterface interface {
 	ListAllBuckets() (chan string, chan error)
 	ListAllBucketHashes() (chan Hash, chan error)
 	ListCategoryCheckpoints(cat string, pth string) (chan uint32, chan error)
-	GetXdrStreamForHash(hash Hash) (*XdrStream, error)
-	GetXdrStream(pth string) (*XdrStream, error)
+	GetXdrStreamForHash(hash Hash) (*xdr.Stream, error)
+	GetXdrStream(pth string) (*xdr.Stream, error)
 	GetCheckpointManager() CheckpointManager
+	GetStats() []ArchiveStats
 }
 
 var _ ArchiveInterface = &Archive{}
@@ -114,7 +110,20 @@ type Archive struct {
 
 	checkpointManager CheckpointManager
 
-	backend ArchiveBackend
+	backend storage.Storage
+	stats   archiveStats
+	cache   *archiveBucketCache
+}
+
+type archiveBucketCache struct {
+	fscache.Cache
+
+	path  string
+	sizes sync.Map
+}
+
+func (arch *Archive) GetStats() []ArchiveStats {
+	return []ArchiveStats{&arch.stats}
 }
 
 func (arch *Archive) GetCheckpointManager() CheckpointManager {
@@ -124,6 +133,8 @@ func (arch *Archive) GetCheckpointManager() CheckpointManager {
 func (a *Archive) GetPathHAS(path string) (HistoryArchiveState, error) {
 	var has HistoryArchiveState
 	rdr, err := a.backend.GetFile(path)
+	// this is a query on the HA server state, not a data/bucket file download
+	a.stats.incrementRequests()
 	if err != nil {
 		return has, err
 	}
@@ -150,6 +161,7 @@ func (a *Archive) GetPathHAS(path string) (HistoryArchiveState, error) {
 
 func (a *Archive) PutPathHAS(path string, has HistoryArchiveState, opts *CommandOptions) error {
 	exists, err := a.backend.Exists(path)
+	a.stats.incrementRequests()
 	if err != nil {
 		return err
 	}
@@ -161,19 +173,31 @@ func (a *Archive) PutPathHAS(path string, has HistoryArchiveState, opts *Command
 	if err != nil {
 		return err
 	}
-	return a.backend.PutFile(path,
-		ioutil.NopCloser(bytes.NewReader(buf)))
+	a.stats.incrementUploads()
+	return a.backend.PutFile(path, io.NopCloser(bytes.NewReader(buf)))
+}
+
+func (a *Archive) GetLatestLedgerSequence() (uint32, error) {
+	has, err := a.GetRootHAS()
+	if err != nil {
+		log.Error("Error getting root HAS from archive", err)
+		return 0, errors.Wrap(err, "failed to retrieve the latest ledger sequence from history archive")
+	}
+
+	return has.CurrentLedger, nil
 }
 
 func (a *Archive) BucketExists(bucket Hash) (bool, error) {
-	return a.backend.Exists(BucketPath(bucket))
+	return a.cachedExists(BucketPath(bucket))
 }
 
 func (a *Archive) BucketSize(bucket Hash) (int64, error) {
+	a.stats.incrementRequests()
 	return a.backend.Size(BucketPath(bucket))
 }
 
 func (a *Archive) CategoryCheckpointExists(cat string, chk uint32) (bool, error) {
+	a.stats.incrementRequests()
 	return a.backend.Exists(CategoryCheckpointPath(cat, chk))
 }
 
@@ -306,14 +330,17 @@ func (a *Archive) PutRootHAS(has HistoryArchiveState, opts *CommandOptions) erro
 }
 
 func (a *Archive) ListBucket(dp DirPrefix) (chan string, chan error) {
+	a.stats.incrementRequests()
 	return a.backend.ListFiles(path.Join("bucket", dp.Path()))
 }
 
 func (a *Archive) ListAllBuckets() (chan string, chan error) {
+	a.stats.incrementRequests()
 	return a.backend.ListFiles("bucket")
 }
 
 func (a *Archive) ListAllBucketHashes() (chan Hash, chan error) {
+	a.stats.incrementRequests()
 	sch, errs := a.backend.ListFiles("bucket")
 	ch := make(chan Hash)
 	rx := regexp.MustCompile("bucket" + hexPrefixPat + "bucket-([0-9a-f]{64})\\.xdr\\.gz$")
@@ -334,6 +361,7 @@ func (a *Archive) ListCategoryCheckpoints(cat string, pth string) (chan uint32, 
 	ext := categoryExt(cat)
 	rx := regexp.MustCompile(cat + hexPrefixPat + cat +
 		"-([0-9a-f]{8})\\." + regexp.QuoteMeta(ext) + "$")
+	a.stats.incrementRequests()
 	sch, errs := a.backend.ListFiles(path.Join(cat, pth))
 	ch := make(chan uint32)
 	errs = makeErrorPump(errs)
@@ -363,22 +391,107 @@ func (a *Archive) GetBucketPathForHash(hash Hash) string {
 	)
 }
 
-func (a *Archive) GetXdrStreamForHash(hash Hash) (*XdrStream, error) {
+func (a *Archive) GetXdrStreamForHash(hash Hash) (*xdr.Stream, error) {
 	return a.GetXdrStream(a.GetBucketPathForHash(hash))
 }
 
-func (a *Archive) GetXdrStream(pth string) (*XdrStream, error) {
+func (a *Archive) GetXdrStream(pth string) (*xdr.Stream, error) {
 	if !strings.HasSuffix(pth, ".xdr.gz") {
 		return nil, errors.New("File has non-.xdr.gz suffix: " + pth)
 	}
-	rdr, err := a.backend.GetFile(pth)
+	rdr, err := a.cachedGet(pth)
 	if err != nil {
 		return nil, err
 	}
-	return NewXdrGzStream(rdr)
+	return xdr.NewGzStream(rdr)
 }
 
-func Connect(u string, opts ConnectOptions) (*Archive, error) {
+func (a *Archive) cachedGet(pth string) (io.ReadCloser, error) {
+	if a.cache == nil {
+		a.stats.incrementDownloads()
+		return a.backend.GetFile(pth)
+	}
+
+	L := log.WithField("path", pth).WithField("cache", a.cache.path)
+
+	rdr, wrtr, err := a.cache.Get(pth)
+	if err != nil {
+		L.WithError(err).
+			WithField("remove", a.cache.Remove(pth)).
+			Warn("On-disk cache retrieval failed")
+		a.stats.incrementDownloads()
+		return a.backend.GetFile(pth)
+	}
+
+	// If a NEW key is being retrieved, it returns a writer to which
+	// you're expected to write your upstream as well as a reader that
+	// will read directly from it.
+	if wrtr != nil {
+		log.WithField("path", pth).Info("Caching file...")
+		a.stats.incrementDownloads()
+		upstreamReader, err := a.backend.GetFile(pth)
+		if err != nil {
+			writeErr := wrtr.Close()
+			readErr := rdr.Close()
+			removeErr := a.cache.Remove(pth)
+			// Execution order isn't guaranteed w/in a function call expression
+			// so we close them with explicit order first.
+			L.WithError(err).WithFields(log.Fields{
+				"write-close": writeErr,
+				"read-close":  readErr,
+				"cache-rm":    removeErr,
+			}).Warn("Download failed, purging from cache")
+			return nil, err
+		}
+
+		// Start a goroutine to slurp up the upstream and feed
+		// it directly to the cache.
+		go func() {
+			written, err := io.Copy(wrtr, upstreamReader)
+			writeErr := wrtr.Close()
+			readErr := upstreamReader.Close()
+			fields := log.Fields{
+				"wr-close": writeErr,
+				"rd-close": readErr,
+			}
+
+			if err != nil {
+				L.WithFields(fields).WithError(err).
+					Warn("Failed to download and cache file")
+
+				// Removal must happen *after* handles close.
+				if removalErr := a.cache.Remove(pth); removalErr != nil {
+					L.WithError(removalErr).Warn("Removing cached file failed")
+				}
+			} else {
+				L.WithFields(fields).Infof("Cached %dKiB file", written/1024)
+
+				// Track how much bandwidth we've saved from caching by saving
+				// the size of the file we just downloaded.
+				a.cache.sizes.Store(pth, written)
+			}
+		}()
+	} else {
+		// Best-effort check to track bandwidth metrics
+		if written, found := a.cache.sizes.Load(pth); found {
+			a.stats.incrementCacheBandwidth(written.(int64))
+		}
+		a.stats.incrementCacheHits()
+	}
+
+	return rdr, nil
+}
+
+func (a *Archive) cachedExists(pth string) (bool, error) {
+	if a.cache != nil && a.cache.Exists(pth) {
+		return true, nil
+	}
+
+	a.stats.incrementRequests()
+	return a.backend.Exists(pth)
+}
+
+func Connect(u string, opts ArchiveOptions) (*Archive, error) {
 	arch := Archive{
 		networkPassphrase:       opts.NetworkPassphrase,
 		checkpointFiles:         make(map[string](map[uint32]bool)),
@@ -396,40 +509,71 @@ func Connect(u string, opts ConnectOptions) (*Archive, error) {
 		arch.checkpointFiles[cat] = make(map[uint32]bool)
 	}
 
-	if u == "" {
-		return &arch, errors.New("URL is empty")
+	if opts.ConnectOptions.Context == nil {
+		opts.ConnectOptions.Context = context.Background()
 	}
 
-	parsed, err := url.Parse(u)
+	var err error
+	arch.backend, err = ConnectBackend(u, opts.ConnectOptions)
 	if err != nil {
 		return &arch, err
 	}
 
-	if opts.Context == nil {
-		opts.Context = context.Background()
+	if opts.CachePath != "" {
+		// Set up a <= ~10GiB LRU cache for history archives files
+		haunter := fscache.NewLRUHaunterStrategy(
+			fscache.NewLRUHaunter(0, 10<<30, time.Minute /* frequency check */),
+		)
+
+		// Wipe any existing cache on startup
+		os.RemoveAll(opts.CachePath)
+		fs, err := fscache.NewFs(opts.CachePath, 0755 /* drwxr-xr-x */)
+
+		if err != nil {
+			return &arch, errors.Wrapf(err,
+				"creating cache at '%s' with mode 0755 failed",
+				opts.CachePath)
+		}
+
+		cache, err := fscache.NewCacheWithHaunter(fs, haunter)
+		if err != nil {
+			return &arch, errors.Wrapf(err,
+				"creating cache at '%s' failed",
+				opts.CachePath)
+		}
+
+		arch.cache = &archiveBucketCache{cache, opts.CachePath, sync.Map{}}
 	}
 
-	pth := parsed.Path
-	if parsed.Scheme == "s3" {
-		// Inside s3, all paths start _without_ the leading /
-		if len(pth) > 0 && pth[0] == '/' {
-			pth = pth[1:]
-		}
-		arch.backend, err = makeS3Backend(parsed.Host, pth, opts)
-	} else if parsed.Scheme == "file" {
-		pth = path.Join(parsed.Host, pth)
-		arch.backend = makeFsBackend(pth, opts)
-	} else if parsed.Scheme == "http" || parsed.Scheme == "https" {
-		arch.backend = makeHttpBackend(parsed, opts)
-	} else if parsed.Scheme == "mock" {
-		arch.backend = makeMockBackend(opts)
-	} else {
-		err = errors.New("unknown URL scheme: '" + parsed.Scheme + "'")
-	}
-	return &arch, err
+	arch.stats = archiveStats{backendName: u}
+	return &arch, nil
 }
 
-func MustConnect(u string, opts ConnectOptions) *Archive {
+func ConnectBackend(u string, opts storage.ConnectOptions) (storage.Storage, error) {
+	if u == "" {
+		return nil, errors.New("URL is empty")
+	}
+
+	var err error
+	parsed, err := url.Parse(u)
+	if err != nil {
+		return nil, err
+	}
+
+	var backend storage.Storage
+
+	if parsed.Scheme == "mock" {
+		backend = makeMockBackend()
+	} else if parsed.Scheme == "fmock" {
+		backend = makeFailingMockBackend()
+	} else {
+		backend, err = storage.ConnectBackend(u, opts)
+	}
+
+	return backend, err
+}
+
+func MustConnect(u string, opts ArchiveOptions) *Archive {
 	arch, err := Connect(u, opts)
 	if err != nil {
 		log.Fatal(err)

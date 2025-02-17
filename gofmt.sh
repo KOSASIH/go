@@ -2,7 +2,7 @@
 set -e
 
 printf "Running gofmt checks...\n"
-OUTPUT=$(gofmt -d .)
+OUTPUT=$(gofmt -d -s .)
 
 if [[ $OUTPUT ]]; then
   printf "gofmt found unformatted files:\n\n"

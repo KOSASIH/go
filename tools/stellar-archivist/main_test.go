@@ -12,7 +12,7 @@ import (
 )
 
 func TestLastOption(t *testing.T) {
-	src_arch := historyarchive.MustConnect("mock://test", historyarchive.ConnectOptions{CheckpointFrequency: 64})
+	src_arch := historyarchive.MustConnect("mock://test", historyarchive.ArchiveOptions{CheckpointFrequency: 64})
 	assert.NotEqual(t, nil, src_arch)
 
 	var src_has historyarchive.HistoryArchiveState
@@ -28,8 +28,8 @@ func TestLastOption(t *testing.T) {
 }
 
 func TestRecentOption(t *testing.T) {
-	src_arch := historyarchive.MustConnect("mock://test1", historyarchive.ConnectOptions{CheckpointFrequency: 64})
-	dst_arch := historyarchive.MustConnect("mock://test2", historyarchive.ConnectOptions{CheckpointFrequency: 64})
+	src_arch := historyarchive.MustConnect("mock://test1", historyarchive.ArchiveOptions{CheckpointFrequency: 64})
+	dst_arch := historyarchive.MustConnect("mock://test2", historyarchive.ArchiveOptions{CheckpointFrequency: 64})
 	assert.NotEqual(t, nil, src_arch)
 	assert.NotEqual(t, nil, dst_arch)
 

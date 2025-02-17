@@ -34,18 +34,40 @@ func TestPopulateTransaction_Successful(t *testing.T) {
 		},
 	}
 
-	assert.NoError(t, PopulateTransaction(ctx, row.TransactionHash, &dest, row))
+	assert.NoError(t, PopulateTransaction(ctx, row.TransactionHash, &dest, row, false))
 	assert.True(t, dest.Successful)
 
 	dest = Transaction{}
 	row = history.Transaction{
 		TransactionWithoutLedger: history.TransactionWithoutLedger{
 			Successful: false,
+			TxMeta:     "xyz",
 		},
 	}
 
-	assert.NoError(t, PopulateTransaction(ctx, row.TransactionHash, &dest, row))
+	assert.NoError(t, PopulateTransaction(ctx, row.TransactionHash, &dest, row, false))
 	assert.False(t, dest.Successful)
+	assert.NotEmpty(t, dest.ResultMetaXdr)
+}
+
+func TestPopulateTransactionWhenSkipMeta(t *testing.T) {
+	ctx, _ := test.ContextWithLogBuffer()
+
+	var (
+		dest Transaction
+		row  history.Transaction
+	)
+
+	dest = Transaction{}
+	row = history.Transaction{
+		TransactionWithoutLedger: history.TransactionWithoutLedger{
+			Successful: true,
+		},
+	}
+
+	assert.NoError(t, PopulateTransaction(ctx, row.TransactionHash, &dest, row, true))
+	assert.True(t, dest.Successful)
+	assert.Empty(t, dest.ResultMetaXdr)
 }
 
 func TestPopulateTransaction_HashMemo(t *testing.T) {
@@ -55,12 +77,14 @@ func TestPopulateTransaction_HashMemo(t *testing.T) {
 		TransactionWithoutLedger: history.TransactionWithoutLedger{
 			MemoType: "hash",
 			Memo:     null.StringFrom("abcdef"),
+			TxMeta:   "xyz",
 		},
 	}
-	assert.NoError(t, PopulateTransaction(ctx, row.TransactionHash, &dest, row))
+	assert.NoError(t, PopulateTransaction(ctx, row.TransactionHash, &dest, row, false))
 	assert.Equal(t, "hash", dest.MemoType)
 	assert.Equal(t, "abcdef", dest.Memo)
 	assert.Equal(t, "", dest.MemoBytes)
+	assert.NotEmpty(t, dest.ResultMetaXdr)
 }
 
 func TestPopulateTransaction_TextMemo(t *testing.T) {
@@ -122,15 +146,17 @@ func TestPopulateTransaction_TextMemo(t *testing.T) {
 				MemoType:   "text",
 				TxEnvelope: envelopeXDR,
 				Memo:       null.StringFrom("sample"),
+				TxMeta:     "xyz",
 			},
 		}
 
 		var dest Transaction
-		assert.NoError(t, PopulateTransaction(ctx, row.TransactionHash, &dest, row))
+		assert.NoError(t, PopulateTransaction(ctx, row.TransactionHash, &dest, row, false))
 
 		assert.Equal(t, "text", dest.MemoType)
 		assert.Equal(t, "sample", dest.Memo)
 		assert.Equal(t, base64.StdEncoding.EncodeToString(rawMemo), dest.MemoBytes)
+		assert.NotEmpty(t, dest.ResultMetaXdr)
 	}
 }
 
@@ -148,12 +174,14 @@ func TestPopulateTransaction_Fee(t *testing.T) {
 		TransactionWithoutLedger: history.TransactionWithoutLedger{
 			MaxFee:     10000,
 			FeeCharged: 100,
+			TxMeta:     "xyz",
 		},
 	}
 
-	assert.NoError(t, PopulateTransaction(ctx, row.TransactionHash, &dest, row))
+	assert.NoError(t, PopulateTransaction(ctx, row.TransactionHash, &dest, row, false))
 	assert.Equal(t, int64(100), dest.FeeCharged)
 	assert.Equal(t, int64(10000), dest.MaxFee)
+	assert.NotEmpty(t, dest.ResultMetaXdr)
 }
 
 // TestPopulateTransaction_Preconditions tests transaction object population.
@@ -188,13 +216,13 @@ func TestPopulateTransaction_Preconditions(t *testing.T) {
 			MinAccountSequenceAge:       null.StringFrom(fmt.Sprint(minSequenceAge)),
 			MinAccountSequenceLedgerGap: null.IntFrom(int64(minSequenceLedgerGap)),
 			ExtraSigners:                pq.StringArray{"D34DB33F", "8BADF00D"},
+			TxMeta:                      "xyz",
 		},
 	}
 
-	assert.NoError(t, PopulateTransaction(ctx, row.TransactionHash, &dest, row))
+	assert.NoError(t, PopulateTransaction(ctx, row.TransactionHash, &dest, row, false))
+	assert.NotEmpty(t, dest.ResultMetaXdr)
 	p := dest.Preconditions
-	assert.Equal(t, validAfter.Format(time.RFC3339), dest.ValidAfter)
-	assert.Equal(t, validBefore.Format(time.RFC3339), dest.ValidBefore)
 	assert.Equal(t, fmt.Sprint(validAfter.Unix()), p.TimeBounds.MinTime)
 	assert.Equal(t, fmt.Sprint(validBefore.Unix()), p.TimeBounds.MaxTime)
 	assert.Equal(t, minLedger, p.LedgerBounds.MinLedger)
@@ -282,11 +310,13 @@ func TestPopulateTransaction_PreconditionsV2(t *testing.T) {
 					Upper: null.IntFrom(int64(envelopeTimebounds.MaxTime)),
 				},
 				TxEnvelope: envelopeXDR,
+				TxMeta:     "xyz",
 			},
 		}
 
 		var dest Transaction
-		assert.NoError(t, PopulateTransaction(ctx, row.TransactionHash, &dest, row))
+		assert.NoError(t, PopulateTransaction(ctx, row.TransactionHash, &dest, row, false))
+		assert.NotEmpty(t, dest.ResultMetaXdr)
 
 		gotTimebounds := dest.Preconditions.TimeBounds
 		assert.Equal(t, "5", gotTimebounds.MinTime)
@@ -307,7 +337,7 @@ func TestPopulateTransaction_PreconditionsV2_Omissions(t *testing.T) {
 		generic := map[string]interface{}{}
 
 		row := history.Transaction{TransactionWithoutLedger: tx}
-		tt.NoError(PopulateTransaction(ctx, row.TransactionHash, &dest, row))
+		tt.NoError(PopulateTransaction(ctx, row.TransactionHash, &dest, row, false))
 
 		bytes, err := dest.MarshalJSON()
 		tt.NoError(err)
@@ -325,6 +355,7 @@ func TestPopulateTransaction_PreconditionsV2_Omissions(t *testing.T) {
 			MinAccountSequence:          null.IntFromPtr(nil),
 			MinAccountSequenceAge:       null.StringFrom("0"),
 			ExtraSigners:                pq.StringArray{},
+			TxMeta:                      "xyz",
 		}, {
 			AccountSequence:             1,
 			MinAccountSequenceLedgerGap: null.IntFrom(0),
@@ -333,6 +364,7 @@ func TestPopulateTransaction_PreconditionsV2_Omissions(t *testing.T) {
 			MinAccountSequence:          null.IntFromPtr(nil),
 			MinAccountSequenceAge:       null.StringFromPtr(nil),
 			ExtraSigners:                nil,
+			TxMeta:                      "xyz",
 		},
 	} {
 		dest, js := jsonifyTx(tx)
@@ -354,6 +386,7 @@ func TestPopulateTransaction_PreconditionsV2_Omissions(t *testing.T) {
 		// exist entirely.
 		tx.MinAccountSequenceLedgerGap = null.IntFromPtr(nil)
 		dest, js = jsonifyTx(tx)
+		assert.NotEmpty(t, dest.ResultMetaXdr)
 		tt.NotContains(js, "preconditions")
 	}
 }
@@ -375,10 +408,12 @@ func TestFeeBumpTransaction(t *testing.T) {
 			InnerTransactionHash: null.StringFrom("2374e99349b9ef7dba9a5db3339b78fda8f34777b1af33ba468ad5c0df946d4d"),
 			Signatures:           []string{"a", "b", "c"},
 			InnerSignatures:      []string{"d", "e", "f"},
+			TxMeta:               "xyz",
 		},
 	}
 
-	assert.NoError(t, PopulateTransaction(ctx, row.TransactionHash, &dest, row))
+	assert.NoError(t, PopulateTransaction(ctx, row.TransactionHash, &dest, row, false))
+	assert.NotEmpty(t, dest.ResultMetaXdr)
 	assert.Equal(t, row.TransactionHash, dest.Hash)
 	assert.Equal(t, row.TransactionHash, dest.ID)
 	assert.Equal(t, row.FeeAccount.String, dest.FeeAccount)
@@ -397,7 +432,8 @@ func TestFeeBumpTransaction(t *testing.T) {
 	assert.Equal(t, []string{"a", "b", "c"}, dest.FeeBumpTransaction.Signatures)
 	assert.Equal(t, "/transactions/"+row.TransactionHash, dest.Links.Transaction.Href)
 
-	assert.NoError(t, PopulateTransaction(ctx, row.InnerTransactionHash.String, &dest, row))
+	assert.NoError(t, PopulateTransaction(ctx, row.InnerTransactionHash.String, &dest, row, false))
+	assert.NotEmpty(t, dest.ResultMetaXdr)
 	assert.Equal(t, row.InnerTransactionHash.String, dest.Hash)
 	assert.Equal(t, row.InnerTransactionHash.String, dest.ID)
 	assert.Equal(t, row.FeeAccount.String, dest.FeeAccount)

@@ -16,10 +16,7 @@ var (
 
 	// ErrBadSequence is a canned error response for transactions whose sequence
 	// number is wrong.
-	ErrBadSequence = &FailedTransactionError{"AAAAAAAAAAD////7AAAAAA=="}
-	// ErrNoAccount is returned when the source account for the transaction
-	// cannot be found in the database
-	ErrNoAccount = &FailedTransactionError{"AAAAAAAAAAD////4AAAAAA=="}
+	ErrBadSequence = &FailedTransactionError{"AAAAAAAAAAD////7AAAAAA==", ""}
 )
 
 // FailedTransactionError represent an error that occurred because
@@ -27,6 +24,8 @@ var (
 // encoded TransactionResult struct
 type FailedTransactionError struct {
 	ResultXDR string
+	// DiagnosticEventsXDR is a base64-encoded []xdr.DiagnosticEvent
+	DiagnosticEventsXDR string
 }
 
 func (err *FailedTransactionError) Error() string {

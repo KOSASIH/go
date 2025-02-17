@@ -6,10 +6,10 @@ import (
 	"context"
 	"testing"
 
-	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/suite"
 
 	"github.com/stellar/go/services/horizon/internal/db2/history"
+	"github.com/stellar/go/support/db"
 	"github.com/stellar/go/toid"
 	"github.com/stellar/go/xdr"
 )
@@ -18,11 +18,12 @@ type ClaimableBalancesTransactionProcessorTestSuiteLedger struct {
 	suite.Suite
 	ctx                               context.Context
 	processor                         *ClaimableBalancesTransactionProcessor
-	mockQ                             *history.MockQHistoryClaimableBalances
+	mockSession                       *db.MockSession
 	mockTransactionBatchInsertBuilder *history.MockTransactionClaimableBalanceBatchInsertBuilder
 	mockOperationBatchInsertBuilder   *history.MockOperationClaimableBalanceBatchInsertBuilder
+	cbLoader                          *history.ClaimableBalanceLoader
 
-	sequence uint32
+	lcm xdr.LedgerCloseMeta
 }
 
 func TestClaimableBalancesTransactionProcessorTestSuiteLedger(t *testing.T) {
@@ -31,45 +32,60 @@ func TestClaimableBalancesTransactionProcessorTestSuiteLedger(t *testing.T) {
 
 func (s *ClaimableBalancesTransactionProcessorTestSuiteLedger) SetupTest() {
 	s.ctx = context.Background()
-	s.mockQ = &history.MockQHistoryClaimableBalances{}
 	s.mockTransactionBatchInsertBuilder = &history.MockTransactionClaimableBalanceBatchInsertBuilder{}
 	s.mockOperationBatchInsertBuilder = &history.MockOperationClaimableBalanceBatchInsertBuilder{}
-	s.sequence = 20
+	sequence := uint32(20)
+	s.lcm = xdr.LedgerCloseMeta{
+		V0: &xdr.LedgerCloseMetaV0{
+			LedgerHeader: xdr.LedgerHeaderHistoryEntry{
+				Header: xdr.LedgerHeader{
+					LedgerSeq: xdr.Uint32(sequence),
+				},
+			},
+		},
+	}
+	s.cbLoader = history.NewClaimableBalanceLoader(history.ConcurrentInserts)
 
 	s.processor = NewClaimableBalancesTransactionProcessor(
-		s.mockQ,
-		s.sequence,
+		s.cbLoader,
+		s.mockTransactionBatchInsertBuilder,
+		s.mockOperationBatchInsertBuilder,
 	)
 }
 
 func (s *ClaimableBalancesTransactionProcessorTestSuiteLedger) TearDownTest() {
-	s.mockQ.AssertExpectations(s.T())
 	s.mockTransactionBatchInsertBuilder.AssertExpectations(s.T())
 	s.mockOperationBatchInsertBuilder.AssertExpectations(s.T())
 }
 
-func (s *ClaimableBalancesTransactionProcessorTestSuiteLedger) mockTransactionBatchAdd(transactionID, internalID int64, err error) {
-	s.mockTransactionBatchInsertBuilder.On("Add", s.ctx, transactionID, internalID).Return(err).Once()
-}
-
-func (s *ClaimableBalancesTransactionProcessorTestSuiteLedger) mockOperationBatchAdd(operationID, internalID int64, err error) {
-	s.mockOperationBatchInsertBuilder.On("Add", s.ctx, operationID, internalID).Return(err).Once()
-}
-
 func (s *ClaimableBalancesTransactionProcessorTestSuiteLedger) TestEmptyClaimableBalances() {
-	// What is this expecting? Doesn't seem to assert anything meaningful...
-	err := s.processor.Commit(context.Background())
-	s.Assert().NoError(err)
+	s.mockTransactionBatchInsertBuilder.On("Exec", s.ctx, s.mockSession).Return(nil).Once()
+	s.mockOperationBatchInsertBuilder.On("Exec", s.ctx, s.mockSession).Return(nil).Once()
+
+	s.Assert().NoError(s.processor.Flush(s.ctx, s.mockSession))
 }
 
 func (s *ClaimableBalancesTransactionProcessorTestSuiteLedger) testOperationInserts(balanceID xdr.ClaimableBalanceId, body xdr.OperationBody, change xdr.LedgerEntryChange) {
 	// Setup the transaction
-	internalID := int64(1234)
-	txn := createTransaction(true, 1)
+	txn := createTransaction(true, 1, 2)
 	txn.Envelope.Operations()[0].Body = body
 	txn.UnsafeMeta.V = 2
 	txn.UnsafeMeta.V2.Operations = []xdr.OperationMeta{
 		{Changes: xdr.LedgerEntryChanges{
+			{
+				Type: xdr.LedgerEntryChangeTypeLedgerEntryState,
+				State: &xdr.LedgerEntry{
+					Data: xdr.LedgerEntryData{
+						Type: xdr.LedgerEntryTypeClaimableBalance,
+						ClaimableBalance: &xdr.ClaimableBalanceEntry{
+							BalanceId: balanceID,
+						},
+					},
+				},
+			},
+			change,
+			// add a duplicate change to test that the processor
+			// does not insert duplicate rows
 			{
 				Type: xdr.LedgerEntryChangeTypeLedgerEntryState,
 				State: &xdr.LedgerEntry{
@@ -101,46 +117,28 @@ func (s *ClaimableBalancesTransactionProcessorTestSuiteLedger) testOperationInse
 				},
 			}
 	}
-	txnID := toid.New(int32(s.sequence), int32(txn.Index), 0).ToInt64()
+	txnID := toid.New(int32(s.lcm.LedgerSequence()), int32(txn.Index), 0).ToInt64()
 	opID := (&transactionOperationWrapper{
 		index:          uint32(0),
 		transaction:    txn,
 		operation:      txn.Envelope.Operations()[0],
-		ledgerSequence: s.sequence,
+		ledgerSequence: s.lcm.LedgerSequence(),
 	}).ID()
 
-	hexID, _ := xdr.MarshalHex(balanceID)
+	hexID, err := xdr.MarshalHex(balanceID)
+	s.Assert().NoError(err)
 
-	// Setup a q
-	s.mockQ.On("CreateHistoryClaimableBalances", s.ctx, mock.AnythingOfType("[]string"), maxBatchSize).
-		Run(func(args mock.Arguments) {
-			arg := args.Get(1).([]string)
-			s.Assert().ElementsMatch(
-				[]string{
-					hexID,
-				},
-				arg,
-			)
-		}).Return(map[string]int64{
-		hexID: internalID,
-	}, nil).Once()
-
-	// Prepare to process transactions successfully
-	s.mockQ.On("NewTransactionClaimableBalanceBatchInsertBuilder", maxBatchSize).
-		Return(s.mockTransactionBatchInsertBuilder).Once()
-	s.mockTransactionBatchAdd(txnID, internalID, nil)
-	s.mockTransactionBatchInsertBuilder.On("Exec", s.ctx).Return(nil).Once()
+	s.mockTransactionBatchInsertBuilder.On("Add", txnID, s.cbLoader.GetFuture(hexID)).Return(nil).Once()
+	s.mockTransactionBatchInsertBuilder.On("Exec", s.ctx, s.mockSession).Return(nil).Once()
 
 	// Prepare to process operations successfully
-	s.mockQ.On("NewOperationClaimableBalanceBatchInsertBuilder", maxBatchSize).
-		Return(s.mockOperationBatchInsertBuilder).Once()
-	s.mockOperationBatchAdd(opID, internalID, nil)
-	s.mockOperationBatchInsertBuilder.On("Exec", s.ctx).Return(nil).Once()
+	s.mockOperationBatchInsertBuilder.On("Add", opID, s.cbLoader.GetFuture(hexID)).Return(nil).Once()
+	s.mockOperationBatchInsertBuilder.On("Exec", s.ctx, s.mockSession).Return(nil).Once()
 
 	// Process the transaction
-	err := s.processor.ProcessTransaction(s.ctx, txn)
+	err = s.processor.ProcessTransaction(s.lcm, txn)
 	s.Assert().NoError(err)
-	err = s.processor.Commit(s.ctx)
+	err = s.processor.Flush(s.ctx, s.mockSession)
 	s.Assert().NoError(err)
 }
 

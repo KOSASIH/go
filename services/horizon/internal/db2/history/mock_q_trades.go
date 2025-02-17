@@ -3,6 +3,7 @@ package history
 import (
 	"context"
 
+	"github.com/stellar/go/support/db"
 	"github.com/stellar/go/xdr"
 
 	"github.com/stretchr/testify/mock"
@@ -27,8 +28,8 @@ func (m *MockQTrades) CreateHistoryLiquidityPools(ctx context.Context, poolIDs [
 	return a.Get(0).(map[string]int64), a.Error(1)
 }
 
-func (m *MockQTrades) NewTradeBatchInsertBuilder(maxBatchSize int) TradeBatchInsertBuilder {
-	a := m.Called(maxBatchSize)
+func (m *MockQTrades) NewTradeBatchInsertBuilder() TradeBatchInsertBuilder {
+	a := m.Called()
 	return a.Get(0).(TradeBatchInsertBuilder)
 }
 
@@ -41,12 +42,12 @@ type MockTradeBatchInsertBuilder struct {
 	mock.Mock
 }
 
-func (m *MockTradeBatchInsertBuilder) Add(ctx context.Context, entries ...InsertTrade) error {
-	a := m.Called(ctx, entries)
+func (m *MockTradeBatchInsertBuilder) Add(entries ...InsertTrade) error {
+	a := m.Called(entries)
 	return a.Error(0)
 }
 
-func (m *MockTradeBatchInsertBuilder) Exec(ctx context.Context) error {
-	a := m.Called(ctx)
+func (m *MockTradeBatchInsertBuilder) Exec(ctx context.Context, session db.SessionInterface) error {
+	a := m.Called(ctx, session)
 	return a.Error(0)
 }

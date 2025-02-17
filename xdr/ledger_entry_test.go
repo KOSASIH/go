@@ -3,6 +3,9 @@ package xdr
 import (
 	"testing"
 
+	"github.com/stellar/go/gxdr"
+	"github.com/stellar/go/randxdr"
+
 	"github.com/stretchr/testify/assert"
 )
 
@@ -88,4 +91,35 @@ func TestNormalizedClaimableBalance(t *testing.T) {
 
 	input.Normalize()
 	assert.Equal(t, expectedOutput, input)
+}
+
+func TestLedgerKeyCoverage(t *testing.T) {
+	gen := randxdr.NewGenerator()
+	for i := 0; i < 10000; i++ {
+		ledgerEntry := LedgerEntry{}
+		shape := &gxdr.LedgerEntry{}
+		gen.Next(
+			shape,
+			[]randxdr.Preset{},
+		)
+		assert.NoError(t, gxdr.Convert(shape, &ledgerEntry))
+		_, err := ledgerEntry.LedgerKey()
+		assert.NoError(t, err)
+	}
+}
+
+func TestLedgerEntryDataLedgerKeyCoverage(t *testing.T) {
+	gen := randxdr.NewGenerator()
+	for i := 0; i < 10000; i++ {
+		ledgerEntryData := LedgerEntryData{}
+
+		shape := &gxdr.XdrAnon_LedgerEntry_Data{}
+		gen.Next(
+			shape,
+			[]randxdr.Preset{},
+		)
+		assert.NoError(t, gxdr.Convert(shape, &ledgerEntryData))
+		_, err := ledgerEntryData.LedgerKey()
+		assert.NoError(t, err)
+	}
 }

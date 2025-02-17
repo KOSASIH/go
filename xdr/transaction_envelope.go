@@ -242,3 +242,7 @@ func (e TransactionEnvelope) Memo() Memo {
 		panic("unsupported transaction type: " + e.Type.String())
 	}
 }
+
+func (e TransactionEnvelope) OperationsCount() uint32 {
+	return uint32(len(e.Operations()))
+}

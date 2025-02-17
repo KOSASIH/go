@@ -45,6 +45,9 @@ func TestSetup_accountAlreadyConfigured(t *testing.T) {
 			HomeDomain: "domain.test.com",
 			Sequence:   10,
 		}, nil)
+
+	dummyAsset := horizon.AssetStat{}
+	dummyAsset.Asset.Code = "FOO"
 	horizonMock.
 		On("Assets", horizonclient.AssetRequest{
 			ForAssetCode:   opts.AssetCode,
@@ -53,9 +56,7 @@ func TestSetup_accountAlreadyConfigured(t *testing.T) {
 		}).
 		Return(horizon.AssetsPage{
 			Embedded: struct{ Records []horizon.AssetStat }{
-				Records: []horizon.AssetStat{
-					{Amount: "0.0000001"},
-				},
+				Records: []horizon.AssetStat{dummyAsset},
 			},
 		}, nil)
 
@@ -75,7 +76,7 @@ func TestGetOrFundIssuerAccount_failsIfNotDefaultTesntet(t *testing.T) {
 
 	_, err := getOrFundIssuerAccount(issuerKP.Address(), &horizonMock)
 	wantErrMsg := fmt.Sprintf("getting detail for account %s: problem: not_found", issuerKP.Address())
-	require.EqualError(t, err, wantErrMsg)
+	require.True(t, strings.Contains(err.Error(), wantErrMsg))
 }
 
 func TestSetup(t *testing.T) {

@@ -30,3 +30,8 @@ func (m *MockQData) RemoveAccountData(ctx context.Context, keys []AccountDataKey
 	a := m.Called(ctx, keys)
 	return a.Get(0).(int64), a.Error(1)
 }
+
+func (m *MockQData) NewAccountDataBatchInsertBuilder() AccountDataBatchInsertBuilder {
+	a := m.Called()
+	return a.Get(0).(AccountDataBatchInsertBuilder)
+}

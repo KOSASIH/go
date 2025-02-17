@@ -166,7 +166,7 @@ func assertGraphEquals(t *testing.T, a, b *OrderBookGraph) {
 	assert.Equalf(t, len(a.liquidityPools), len(b.liquidityPools),
 		"expected same # of liquidity pools but got %v %v", a, b)
 
-	for assetString, _ := range a.assetStringToID {
+	for assetString := range a.assetStringToID {
 		asset := a.assetStringToID[assetString]
 		otherAsset, ok := b.assetStringToID[assetString]
 		if !ok {

@@ -3,11 +3,16 @@
 package processors
 
 import (
+	"math/big"
 	"testing"
 
-	"github.com/stellar/go/protocols/horizon/base"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/suite"
+
+	"github.com/stellar/go/keypair"
+	"github.com/stellar/go/protocols/horizon/base"
+	"github.com/stellar/go/strkey"
+	"github.com/stellar/go/support/contractevents"
 
 	"github.com/stellar/go/ingest"
 	"github.com/stellar/go/services/horizon/internal/db2/history"
@@ -797,7 +802,7 @@ func TestTransactionOperationDetails(t *testing.T) {
 		})
 	}
 
-	tx := createTransaction(true, 1)
+	tx := createTransaction(true, 1, 2)
 	tx.Index = 1
 
 	tx.Envelope.Operations()[0].Body = xdr.OperationBody{
@@ -1103,7 +1108,7 @@ func TestOperationParticipants(t *testing.T) {
 		xdr.MustAddress("GDRW375MAYR46ODGF2WGANQC2RRZL7O246DYHHCGWTV2RE7IHE2QUQLD"),
 		xdr.MustAddress("GACAR2AEYEKITE2LKI5RMXF5MIVZ6Q7XILROGDT22O7JX4DSWFS7FDDP"),
 	}
-	participantsMap, err := operationsParticipants(transaction, sequence)
+	participantsMap, err := operationsParticipants(transaction, sequence, networkPassphrase)
 	tt.NoError(err)
 	tt.Len(participantsMap, 1)
 	for k, v := range participantsMap {
@@ -1476,7 +1481,7 @@ var (
 
 func getSponsoredSandwichWrappers() []*transactionOperationWrapper {
 	const ledgerSeq = uint32(12345)
-	tx := createTransaction(true, 3)
+	tx := createTransaction(true, 3, 2)
 	tx.Index = 1
 	tx.UnsafeMeta = xdr.TransactionMeta{
 		V: 2,
@@ -1521,6 +1526,13 @@ func getSponsoredSandwichWrappers() []*transactionOperationWrapper {
 		{
 			Type: xdr.LedgerEntryChangeTypeLedgerEntryCreated,
 			Created: &xdr.LedgerEntry{
+				Data: xdr.LedgerEntryData{
+					Type: xdr.LedgerEntryTypeAccount,
+					Account: &xdr.AccountEntry{
+						AccountId: xdr.MustAddress("GAUJETIZVEP2NRYLUESJ3LS66NVCEGMON4UDCBCSBEVPIID773P2W6AY"),
+						Balance:   100,
+					},
+				},
 				LastModifiedLedgerSeq: xdr.Uint32(ledgerSeq),
 				Ext: xdr.LedgerEntryExt{
 					V: 1,
@@ -1850,7 +1862,7 @@ func TestLiquidityPoolDepositDetails(t *testing.T) {
 			UnsafeMeta: xdr.TransactionMeta{
 				V: 2,
 				V2: &xdr.TransactionMetaV2{
-					Operations: []xdr.OperationMeta{{entryChanges}},
+					Operations: []xdr.OperationMeta{{Changes: entryChanges}},
 				},
 			}},
 		operation: xdr.Operation{
@@ -1874,22 +1886,22 @@ func TestLiquidityPoolDepositDetails(t *testing.T) {
 		},
 		"reserves_deposited": []base.AssetAmount{
 			{
-				"USD:GAUJETIZVEP2NRYLUESJ3LS66NVCEGMON4UDCBCSBEVPIID773P2W6AY",
-				"0.0000060",
+				Asset:  "USD:GAUJETIZVEP2NRYLUESJ3LS66NVCEGMON4UDCBCSBEVPIID773P2W6AY",
+				Amount: "0.0000060",
 			},
 			{
-				"native",
-				"0.0000050",
+				Asset:  "native",
+				Amount: "0.0000050",
 			},
 		},
 		"reserves_max": []base.AssetAmount{
 			{
-				"USD:GAUJETIZVEP2NRYLUESJ3LS66NVCEGMON4UDCBCSBEVPIID773P2W6AY",
-				"0.0000100",
+				Asset:  "USD:GAUJETIZVEP2NRYLUESJ3LS66NVCEGMON4UDCBCSBEVPIID773P2W6AY",
+				Amount: "0.0000100",
 			},
 			{
-				"native",
-				"0.0000200",
+				Asset:  "native",
+				Amount: "0.0000200",
 			},
 		},
 		"shares_received": "0.0000010",
@@ -1957,22 +1969,22 @@ func TestFailedLiquidityPoolDepositDetails(t *testing.T) {
 		},
 		"reserves_deposited": []base.AssetAmount{
 			{
-				"",
-				"0.0000000",
+				Asset:  "",
+				Amount: "0.0000000",
 			},
 			{
-				"",
-				"0.0000000",
+				Asset:  "",
+				Amount: "0.0000000",
 			},
 		},
 		"reserves_max": []base.AssetAmount{
 			{
-				"",
-				"0.0000100",
+				Asset:  "",
+				Amount: "0.0000100",
 			},
 			{
-				"",
-				"0.0000200",
+				Asset:  "",
+				Amount: "0.0000200",
 			},
 		},
 		"shares_received": "0.0000000",
@@ -2055,7 +2067,7 @@ func TestLiquidityPoolWithdrawDetails(t *testing.T) {
 			UnsafeMeta: xdr.TransactionMeta{
 				V: 2,
 				V2: &xdr.TransactionMetaV2{
-					Operations: []xdr.OperationMeta{{entryChanges}},
+					Operations: []xdr.OperationMeta{{Changes: entryChanges}},
 				},
 			}},
 		operation: xdr.Operation{
@@ -2069,22 +2081,22 @@ func TestLiquidityPoolWithdrawDetails(t *testing.T) {
 		"liquidity_pool_id": "cafebabe00000000000000000000000000000000000000000000000000000000",
 		"reserves_received": []base.AssetAmount{
 			{
-				"USD:GAUJETIZVEP2NRYLUESJ3LS66NVCEGMON4UDCBCSBEVPIID773P2W6AY",
-				"0.0000060",
+				Asset:  "USD:GAUJETIZVEP2NRYLUESJ3LS66NVCEGMON4UDCBCSBEVPIID773P2W6AY",
+				Amount: "0.0000060",
 			},
 			{
-				"native",
-				"0.0000050",
+				Asset:  "native",
+				Amount: "0.0000050",
 			},
 		},
 		"reserves_min": []base.AssetAmount{
 			{
-				"USD:GAUJETIZVEP2NRYLUESJ3LS66NVCEGMON4UDCBCSBEVPIID773P2W6AY",
-				"0.0000005",
+				Asset:  "USD:GAUJETIZVEP2NRYLUESJ3LS66NVCEGMON4UDCBCSBEVPIID773P2W6AY",
+				Amount: "0.0000005",
 			},
 			{
-				"native",
-				"0.0000010",
+				Asset:  "native",
+				Amount: "0.0000010",
 			},
 		},
 		"shares": "0.0000010",
@@ -2135,22 +2147,22 @@ func TestFailedLiquidityPoolWithdrawDetails(t *testing.T) {
 		"liquidity_pool_id": "cafebabe00000000000000000000000000000000000000000000000000000000",
 		"reserves_received": []base.AssetAmount{
 			{
-				"",
-				"0.0000000",
+				Asset:  "",
+				Amount: "0.0000000",
 			},
 			{
-				"",
-				"0.0000000",
+				Asset:  "",
+				Amount: "0.0000000",
 			},
 		},
 		"reserves_min": []base.AssetAmount{
 			{
-				"",
-				"0.0000005",
+				Asset:  "",
+				Amount: "0.0000005",
 			},
 			{
-				"",
-				"0.0000010",
+				Asset:  "",
+				Amount: "0.0000010",
 			},
 		},
 		"shares": "0.0000010",
@@ -2216,7 +2228,7 @@ func TestParticipantsCoversAllOperationTypes(t *testing.T) {
 	}
 	// calling Participants should error due to the unknown operation
 	_, err := operation.Participants()
-	assert.Contains(t, err.Error(), "Unknown operation type")
+	assert.Contains(t, err.Error(), "unknown operation type")
 }
 
 func TestDetailsCoversAllOperationTypes(t *testing.T) {
@@ -2274,9 +2286,113 @@ func TestDetailsCoversAllOperationTypes(t *testing.T) {
 		operation:      op,
 		ledgerSequence: 1,
 	}
-	// calling Details should panic with unknown operation type
-	f := func() {
-		operation.Details()
+	_, err := operation.Details()
+	assert.ErrorContains(t, err, "unknown operation type: ")
+}
+
+func TestTestInvokeHostFnOperationParticipants(t *testing.T) {
+	sourceAddress := "GAUJETIZVEP2NRYLUESJ3LS66NVCEGMON4UDCBCSBEVPIID773P2W6AY"
+	source := xdr.MustMuxedAddress(sourceAddress)
+
+	randomIssuer := keypair.MustRandom()
+	randomAsset := xdr.MustNewCreditAsset("TESTING", randomIssuer.Address())
+	passphrase := "passphrase"
+	randomAccount := keypair.MustRandom().Address()
+
+	burnEvtAcc := keypair.MustRandom().Address()
+	mintEvtAcc := keypair.MustRandom().Address()
+	clawbkEvtAcc := keypair.MustRandom().Address()
+	transferEvtFromAcc := keypair.MustRandom().Address()
+	transferEvtToAcc := keypair.MustRandom().Address()
+
+	transferContractEvent := contractevents.GenerateEvent(contractevents.EventTypeTransfer, transferEvtFromAcc, transferEvtToAcc, "", randomAsset, big.NewInt(10000000), passphrase)
+	mintContractEvent := contractevents.GenerateEvent(contractevents.EventTypeMint, "", mintEvtAcc, randomAccount, randomAsset, big.NewInt(10000000), passphrase)
+	burnContractEvent := contractevents.GenerateEvent(contractevents.EventTypeBurn, burnEvtAcc, "", randomAccount, randomAsset, big.NewInt(10000000), passphrase)
+	clawbackContractEvent := contractevents.GenerateEvent(contractevents.EventTypeClawback, clawbkEvtAcc, "", randomAccount, randomAsset, big.NewInt(10000000), passphrase)
+
+	tx1 := ingest.LedgerTransaction{
+		UnsafeMeta: xdr.TransactionMeta{
+			V: 3,
+			V3: &xdr.TransactionMetaV3{
+				SorobanMeta: &xdr.SorobanTransactionMeta{
+					Events: []xdr.ContractEvent{
+						transferContractEvent,
+						burnContractEvent,
+						mintContractEvent,
+						clawbackContractEvent,
+					},
+				},
+			},
+		},
 	}
-	assert.PanicsWithError(t, "Unknown operation type: ", f)
+
+	wrapper1 := transactionOperationWrapper{
+		transaction: tx1,
+		operation: xdr.Operation{
+			SourceAccount: &source,
+			Body: xdr.OperationBody{
+				Type: xdr.OperationTypeInvokeHostFunction,
+			},
+		},
+		network: passphrase,
+	}
+
+	participants, err := wrapper1.Participants()
+	assert.NoError(t, err)
+	assert.ElementsMatch(t,
+		[]xdr.AccountId{
+			xdr.MustAddress(source.Address()),
+			xdr.MustAddress(mintEvtAcc),
+			xdr.MustAddress(burnEvtAcc),
+			xdr.MustAddress(clawbkEvtAcc),
+			xdr.MustAddress(transferEvtFromAcc),
+			xdr.MustAddress(transferEvtToAcc),
+		},
+		participants,
+	)
+
+	contractId := [32]byte{}
+	zeroContractStrKey, err := strkey.Encode(strkey.VersionByteContract, contractId[:])
+	assert.NoError(t, err)
+
+	transferContractEvent = contractevents.GenerateEvent(contractevents.EventTypeTransfer, zeroContractStrKey, zeroContractStrKey, "", randomAsset, big.NewInt(10000000), passphrase)
+	mintContractEvent = contractevents.GenerateEvent(contractevents.EventTypeMint, "", zeroContractStrKey, randomAccount, randomAsset, big.NewInt(10000000), passphrase)
+	burnContractEvent = contractevents.GenerateEvent(contractevents.EventTypeBurn, zeroContractStrKey, "", randomAccount, randomAsset, big.NewInt(10000000), passphrase)
+	clawbackContractEvent = contractevents.GenerateEvent(contractevents.EventTypeClawback, zeroContractStrKey, "", randomAccount, randomAsset, big.NewInt(10000000), passphrase)
+
+	tx2 := ingest.LedgerTransaction{
+		UnsafeMeta: xdr.TransactionMeta{
+			V: 3,
+			V3: &xdr.TransactionMetaV3{
+				SorobanMeta: &xdr.SorobanTransactionMeta{
+					Events: []xdr.ContractEvent{
+						transferContractEvent,
+						burnContractEvent,
+						mintContractEvent,
+						clawbackContractEvent,
+					},
+				},
+			},
+		},
+	}
+
+	wrapper2 := transactionOperationWrapper{
+		transaction: tx2,
+		operation: xdr.Operation{
+			SourceAccount: &source,
+			Body: xdr.OperationBody{
+				Type: xdr.OperationTypeInvokeHostFunction,
+			},
+		},
+		network: passphrase,
+	}
+
+	participants, err = wrapper2.Participants()
+	assert.NoError(t, err)
+	assert.ElementsMatch(t,
+		[]xdr.AccountId{
+			xdr.MustAddress(source.Address()),
+		},
+		participants,
+	)
 }

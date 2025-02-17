@@ -37,8 +37,28 @@ func (key *LedgerKey) Equals(other LedgerKey) bool {
 		l := key.MustLiquidityPool()
 		r := other.MustLiquidityPool()
 		return l.LiquidityPoolId == r.LiquidityPoolId
+	case LedgerEntryTypeConfigSetting:
+		l := key.MustConfigSetting()
+		r := other.MustConfigSetting()
+		return l.ConfigSettingId == r.ConfigSettingId
+	case LedgerEntryTypeContractData:
+		l := key.MustContractData()
+		r := other.MustContractData()
+		return l.Contract.Equals(r.Contract) && l.Key.Equals(r.Key) && l.Durability == r.Durability
+	case LedgerEntryTypeContractCode:
+		l := key.MustContractCode()
+		r := other.MustContractCode()
+		return l.Hash == r.Hash
+	case LedgerEntryTypeClaimableBalance:
+		l := key.MustClaimableBalance()
+		r := other.MustClaimableBalance()
+		return l.BalanceId.MustV0() == r.BalanceId.MustV0()
+	case LedgerEntryTypeTtl:
+		l := key.MustTtl()
+		r := other.MustTtl()
+		return l.KeyHash == r.KeyHash
 	default:
-		panic(fmt.Errorf("Unknown ledger key type: %v", key.Type))
+		panic(fmt.Errorf("unknown ledger key type: %v", key.Type))
 	}
 }
 
@@ -119,6 +139,77 @@ func (key *LedgerKey) SetLiquidityPool(poolID PoolId) error {
 	return nil
 }
 
+// SetContractData mutates `key` such that it represents the identity of a
+// contract data entry.
+func (key *LedgerKey) SetContractData(contract ScAddress,
+	keyVal ScVal,
+	keyDurability ContractDataDurability) error {
+	data := LedgerKeyContractData{
+		Contract:   contract,
+		Key:        keyVal,
+		Durability: keyDurability,
+	}
+	nkey, err := NewLedgerKey(LedgerEntryTypeContractData, data)
+	if err != nil {
+		return err
+	}
+
+	*key = nkey
+	return nil
+}
+
+// SetContractCode mutates `key` such that it represents the identity of a
+// contract code entry.
+func (key *LedgerKey) SetContractCode(contractID Hash) error {
+	data := LedgerKeyContractCode{
+		Hash: contractID,
+	}
+	nkey, err := NewLedgerKey(LedgerEntryTypeContractCode, data)
+	if err != nil {
+		return err
+	}
+
+	*key = nkey
+	return nil
+}
+
+// SetConfigSetting mutates `key` such that it represents the identity of a
+// config setting entry.
+func (key *LedgerKey) SetConfigSetting(configSettingID ConfigSettingId) error {
+	data := LedgerKeyConfigSetting{
+		ConfigSettingId: configSettingID,
+	}
+	nkey, err := NewLedgerKey(LedgerEntryTypeConfigSetting, data)
+	if err != nil {
+		return err
+	}
+
+	*key = nkey
+	return nil
+}
+
+// SetTtl mutates `key` such that it represents the identity of an
+// expiration entry.
+func (key *LedgerKey) SetTtl(keyHash Hash) error {
+	data := LedgerKeyTtl{
+		KeyHash: keyHash,
+	}
+	nkey, err := NewLedgerKey(LedgerEntryTypeTtl, data)
+	if err != nil {
+		return err
+	}
+
+	*key = nkey
+	return nil
+}
+
+// GetLedgerKeyFromData obtains a ledger key from LedgerEntryData
+//
+// deprecated: Use `LedgerEntryData.LedgerKey()`
+func GetLedgerKeyFromData(data LedgerEntryData) (LedgerKey, error) {
+	return data.LedgerKey()
+}
+
 func (e *EncodingBuffer) ledgerKeyCompressEncodeTo(key LedgerKey) error {
 	if err := e.xdrEncoderBuf.WriteByte(byte(key.Type)); err != nil {
 		return err
@@ -148,6 +239,28 @@ func (e *EncodingBuffer) ledgerKeyCompressEncodeTo(key LedgerKey) error {
 	case LedgerEntryTypeLiquidityPool:
 		_, err := e.xdrEncoderBuf.Write(key.LiquidityPool.LiquidityPoolId[:])
 		return err
+	case LedgerEntryTypeContractData:
+		// contract
+		if contractBytes, err := key.ContractData.Contract.MarshalBinary(); err != nil {
+			return err
+		} else {
+			if _, err := e.xdrEncoderBuf.Write(contractBytes[:]); err != nil {
+				return err
+			}
+		}
+		// key
+		if err := key.ContractData.Key.EncodeTo(e.encoder); err != nil {
+			return err
+		}
+		// durability
+		return e.xdrEncoderBuf.WriteByte(byte(key.ContractData.Durability))
+	case LedgerEntryTypeContractCode:
+		_, err := e.xdrEncoderBuf.Write(key.ContractCode.Hash[:])
+		return err
+	case LedgerEntryTypeConfigSetting:
+		return key.ConfigSetting.ConfigSettingId.EncodeTo(e.encoder)
+	case LedgerEntryTypeTtl:
+		return key.Ttl.KeyHash.EncodeTo(e.encoder)
 	default:
 		panic("Unknown type")
 	}

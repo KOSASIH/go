@@ -1,0 +1,42 @@
+
+# Sample TOML Configuration
+
+# Admin port configuration
+# Specifies the port number for hosting the web service locally to publish metrics.
+admin_port = 6061
+
+# Datastore Configuration
+[datastore_config]
+# Specifies the type of datastore. Currently, only Google Cloud Storage (GCS) is supported.
+type = "GCS"
+
+[datastore_config.params]
+# The Google Cloud Storage bucket path for storing data, with optional subpaths for organization.
+destination_bucket_path = "your-bucket-name/<optional_subpath1>/<optional_subpath2>/"
+
+[datastore_config.schema]
+# Configuration for data organization
+ledgers_per_file = 64      # Number of ledgers stored in each file.
+files_per_partition = 10   # Number of files per partition/directory.
+
+# Stellar-core Configuration
+[stellar_core_config]
+# Use default captive-core config based on network
+# Options are "testnet" for the test network or "pubnet" for the public network.
+network = "testnet"
+
+# Alternatively, you can manually configure captive-core parameters (overrides defaults if 'network' is set).
+
+# Path to the captive-core configuration file.
+#captive_core_toml_path = "my-captive-core.cfg"
+
+# URLs for Stellar history archives, with multiple URLs allowed.
+#history_archive_urls = ["http://testarchiveurl1", "http://testarchiveurl2"]
+
+# Network passphrase for the Stellar network.
+#network_passphrase = "Test SDF Network ; September 2015"
+
+# Path to stellar-core binary
+# Not required when running in a Docker container as it has the stellar-core installed and path is set.
+# When running outside of Docker, it will look for stellar-core in the OS path if it exists.
+#stellar_core_binary_path = "/my/path/to/stellar-core

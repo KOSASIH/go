@@ -61,7 +61,7 @@ func TestCreateAccountRoundtrip(t *testing.T) {
 		Destination:   "GDYNXQFHU6W5RBW2CCCDDAAU3TMTSU2RMGIBM6HGHAR4NJJKY3IJETHT",
 		Amount:        "1.0000000",
 	}
-	testOperationsMarshallingRoundtrip(t, []Operation{&createAccount}, false)
+	testOperationsMarshalingRoundtrip(t, []Operation{&createAccount}, false)
 
 	// with muxed accounts
 	createAccount = CreateAccount{
@@ -69,6 +69,6 @@ func TestCreateAccountRoundtrip(t *testing.T) {
 		Destination:   "GDYNXQFHU6W5RBW2CCCDDAAU3TMTSU2RMGIBM6HGHAR4NJJKY3IJETHT",
 		Amount:        "1.0000000",
 	}
-	testOperationsMarshallingRoundtrip(t, []Operation{&createAccount}, true)
+	testOperationsMarshalingRoundtrip(t, []Operation{&createAccount}, true)
 
 }

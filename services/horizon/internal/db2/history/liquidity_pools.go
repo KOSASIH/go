@@ -9,8 +9,9 @@ import (
 
 	sq "github.com/Masterminds/squirrel"
 	"github.com/guregu/null"
-	"github.com/jmoiron/sqlx"
+
 	"github.com/stellar/go/services/horizon/internal/db2"
+	"github.com/stellar/go/support/db"
 	"github.com/stellar/go/support/errors"
 	"github.com/stellar/go/xdr"
 )
@@ -188,7 +189,7 @@ func (q *Q) GetLiquidityPools(ctx context.Context, query LiquidityPoolsQuery) ([
 }
 
 func (q *Q) StreamAllLiquidityPools(ctx context.Context, callback func(LiquidityPool) error) error {
-	var rows *sqlx.Rows
+	var rows *db.Rows
 	var err error
 
 	if rows, err = q.Query(ctx, selectLiquidityPools.Where("deleted = ?", false)); err != nil {

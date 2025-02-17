@@ -9,7 +9,7 @@ jobs:
   complete:
     if: always()
     needs: [check, build, test]
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
     steps:
     - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
       run: exit 1
@@ -17,8 +17,8 @@ jobs:
   check:
     strategy:
       matrix:
-        os: [ubuntu-20.04]
-        go: [1.20.1]
+        os: [ubuntu-22.04]
+        go: ["1.23"]
     runs-on: ${{ matrix.os }}
     steps:
     - uses: actions/checkout@v3
@@ -37,8 +37,8 @@ jobs:
   build:
     strategy:
       matrix:
-        os: [ubuntu-20.04]
-        go: [1.19.6, 1.20.1]
+        os: [ubuntu-22.04]
+        go: ["1.22", "1.23"]
     runs-on: ${{ matrix.os }}
     steps:
     - uses: actions/checkout@v3
@@ -55,9 +55,9 @@ jobs:
   test:
     strategy:
       matrix:
-        os: [ubuntu-20.04]
-        go: [1.19.6, 1.20.1]
-        pg: [9.6.5, 10]
+        os: [ubuntu-22.04]
+        go: ["1.22", "1.23"]
+        pg: [12, 16]
     runs-on: ${{ matrix.os }}
     services:
       postgres:
@@ -82,7 +82,7 @@ jobs:
           --health-retries 5
         ports:
         - 6379:6379
-    env: 
+    env:
       PGHOST: localhost
       PGPORT: 5432
       PGUSER: postgres

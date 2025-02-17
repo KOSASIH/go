@@ -4,6 +4,7 @@ package xdr
 
 import (
 	"bytes"
+	_ "embed"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
@@ -12,12 +13,20 @@ import (
 	"strings"
 
 	xdr "github.com/stellar/go-xdr/xdr3"
+
 	"github.com/stellar/go/support/errors"
 )
 
+// CommitHash is the commit hash that was used to generate the xdr in this folder.
+// During the process of updating the XDR, the text file below is being updated.
+// Then, during compile time, the file content are being embedded into the given string.
+//
+//go:embed xdr_commit_generated.txt
+var CommitHash string
+
 // Keyer represents a type that can be converted into a LedgerKey
 type Keyer interface {
-	LedgerKey() LedgerKey
+	LedgerKey() (LedgerKey, error)
 }
 
 var _ = LedgerEntry{}
@@ -25,11 +34,13 @@ var _ = LedgerKey{}
 
 var OperationTypeToStringMap = operationTypeMap
 
-func safeUnmarshalString(decoder func(reader io.Reader) io.Reader, data string, dest interface{}) error {
+var LedgerEntryTypeMap = ledgerEntryTypeMap
+
+func safeUnmarshalString(decoder func(reader io.Reader) io.Reader, options xdr.DecodeOptions, data string, dest interface{}) error {
 	count := &countWriter{}
 	l := len(data)
 
-	_, err := Unmarshal(decoder(io.TeeReader(strings.NewReader(data), count)), dest)
+	_, err := UnmarshalWithOptions(decoder(io.TeeReader(strings.NewReader(data), count)), dest, options)
 	if err != nil {
 		return err
 	}
@@ -41,14 +52,23 @@ func safeUnmarshalString(decoder func(reader io.Reader) io.Reader, data string, 
 	return nil
 }
 
+func decodeOptionsWithMaxInputLen(maxInputLen int) xdr.DecodeOptions {
+	options := xdr.DefaultDecodeOptions
+	options.MaxInputLen = maxInputLen
+	return options
+}
+
 // SafeUnmarshalBase64 first decodes the provided reader from base64 before
 // decoding the xdr into the provided destination. Also ensures that the reader
 // is fully consumed.
 func SafeUnmarshalBase64(data string, dest interface{}) error {
+	decodedLen := base64.StdEncoding.DecodedLen(len(data))
+	options := decodeOptionsWithMaxInputLen(decodedLen)
 	return safeUnmarshalString(
 		func(r io.Reader) io.Reader {
 			return base64.NewDecoder(base64.StdEncoding, r)
 		},
+		options,
 		data,
 		dest,
 	)
@@ -58,11 +78,13 @@ func SafeUnmarshalBase64(data string, dest interface{}) error {
 // decoding the xdr into the provided destination. Also ensures that the reader
 // is fully consumed.
 func SafeUnmarshalHex(data string, dest interface{}) error {
-	return safeUnmarshalString(hex.NewDecoder, data, dest)
+	decodedLen := hex.DecodedLen(len(data))
+	options := decodeOptionsWithMaxInputLen(decodedLen)
+	return safeUnmarshalString(hex.NewDecoder, options, data, dest)
 }
 
 // SafeUnmarshal decodes the provided reader into the destination and verifies
-// that provided bytes are all consumed by the unmarshalling process.
+// that provided bytes are all consumed by the unmarshaling process.
 func SafeUnmarshal(data []byte, dest interface{}) error {
 	r := bytes.NewReader(data)
 	n, err := Unmarshal(r, dest)
@@ -101,7 +123,7 @@ func NewBytesDecoder() *BytesDecoder {
 
 func (d *BytesDecoder) DecodeBytes(v DecoderFrom, b []byte) (int, error) {
 	d.reader.Reset(b)
-	return v.DecodeFrom(d.decoder)
+	return v.DecodeFrom(d.decoder, xdr.DecodeDefaultMaxDepth)
 }
 
 func marshalString(encoder func([]byte) string, v interface{}) (string, error) {
@@ -156,7 +178,7 @@ func NewEncodingBuffer() *EncodingBuffer {
 // UnsafeMarshalBinary marshals the input XDR binary, returning
 // a slice pointing to the internal buffer. Handled with care this improveds
 // performance since copying is not required.
-// Subsequent calls to marshalling methods will overwrite the returned buffer.
+// Subsequent calls to marshaling methods will overwrite the returned buffer.
 func (e *EncodingBuffer) UnsafeMarshalBinary(encodable EncoderTo) ([]byte, error) {
 	e.xdrEncoderBuf.Reset()
 	if err := encodable.EncodeTo(e.encoder); err != nil {
@@ -220,6 +242,18 @@ func (e *EncodingBuffer) LedgerKeyUnsafeMarshalBinaryCompress(key LedgerKey) ([]
 	return e.xdrEncoderBuf.Bytes(), nil
 }
 
+// GetBinaryCompressedLedgerKeyType gets the key type from the result of LedgerKeyUnsafeMarshalBinaryCompress
+func GetBinaryCompressedLedgerKeyType(compressedKey []byte) (LedgerEntryType, error) {
+	if len(compressedKey) < 1 {
+		return 0, errors.New("empty compressed ledger key")
+	}
+	result := LedgerEntryType(compressedKey[0])
+	if int(result) > len(ledgerEntryTypeMap)-1 {
+		return 0, fmt.Errorf("incorrect key type %d", result)
+	}
+	return result, nil
+}
+
 func (e *EncodingBuffer) MarshalBase64(encodable EncoderTo) (string, error) {
 	b, err := e.UnsafeMarshalBase64(encodable)
 	if err != nil {
@@ -263,7 +297,7 @@ func MarshalFramed(w io.Writer, v interface{}) error {
 func ReadFrameLength(d *xdr.Decoder) (uint32, error) {
 	frameLen, n, e := d.DecodeUint()
 	if e != nil {
-		return 0, errors.Wrap(e, "unmarshalling XDR frame header")
+		return 0, errors.Wrap(e, "unmarshaling XDR frame header")
 	}
 	if n != 4 {
 		return 0, errors.New("bad length of XDR frame header")

@@ -6,7 +6,9 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi"
 	"github.com/stretchr/testify/assert"
@@ -14,6 +16,7 @@ import (
 	horizonContext "github.com/stellar/go/services/horizon/internal/context"
 	"github.com/stellar/go/services/horizon/internal/db2"
 	"github.com/stellar/go/services/horizon/internal/ledger"
+	hProblem "github.com/stellar/go/services/horizon/internal/render/problem"
 	"github.com/stellar/go/services/horizon/internal/test"
 	"github.com/stellar/go/support/db"
 	"github.com/stellar/go/support/errors"
@@ -124,10 +127,20 @@ func TestValidateCursorWithinHistory(t *testing.T) {
 		{
 			cursor: "0",
 			order:  "asc",
-			valid:  true,
+			valid:  false,
 		},
 		{
 			cursor: "0-1234",
+			order:  "asc",
+			valid:  false,
+		},
+		{
+			cursor: "1",
+			order:  "asc",
+			valid:  true,
+		},
+		{
+			cursor: "1-1234",
 			order:  "asc",
 			valid:  true,
 		},
@@ -141,7 +154,7 @@ func TestValidateCursorWithinHistory(t *testing.T) {
 			if tc.valid {
 				tt.NoError(err)
 			} else {
-				tt.EqualError(err, "problem: before_history")
+				tt.True(strings.Contains(err.Error(), "problem: before_history"))
 			}
 		})
 	}
@@ -287,6 +300,174 @@ func TestGetPageQuery(t *testing.T) {
 	r = makeTestActionRequest("/?limit=0", nil)
 	_, err = GetPageQuery(ledgerState, r)
 	tt.Assert.Error(err)
+}
+
+func TestPageQueryCursorDefaultOrder(t *testing.T) {
+	ledgerState := &ledger.State{}
+
+	// truncated history
+	ledgerState.SetHorizonStatus(ledger.HorizonStatus{
+		HistoryLatest:         7000,
+		HistoryLatestClosedAt: time.Now(),
+		HistoryElder:          300,
+		ExpHistoryLatest:      7000,
+	})
+
+	req := makeTestActionRequest("/foo-bar/blah?limit=2", testURLParams())
+
+	// default asc, w/o cursor
+	pq, err := GetPageQuery(ledgerState, req)
+	assert.NoError(t, err)
+	assert.Empty(t, pq.Cursor)
+	assert.NoError(t, validateAndAdjustCursor(ledgerState, &pq))
+	assert.Equal(t, toid.AfterLedger(299).String(), pq.Cursor)
+	assert.Equal(t, uint64(2), pq.Limit)
+	assert.Equal(t, "asc", pq.Order)
+
+	cursor := toid.AfterLedger(200).String()
+	reqWithCursor := makeTestActionRequest(fmt.Sprintf("/foo-bar/blah?cursor=%s&limit=2", cursor), testURLParams())
+
+	// default asc, w/ cursor
+	pq, err = GetPageQuery(ledgerState, reqWithCursor)
+	assert.NoError(t, err)
+	assert.Equal(t, cursor, pq.Cursor)
+	assert.NoError(t, validateAndAdjustCursor(ledgerState, &pq))
+	assert.Equal(t, toid.AfterLedger(299).String(), pq.Cursor)
+	assert.Equal(t, uint64(2), pq.Limit)
+	assert.Equal(t, "asc", pq.Order)
+
+	// full history
+	ledgerState.SetHorizonStatus(ledger.HorizonStatus{
+		HistoryLatest:         7000,
+		HistoryLatestClosedAt: time.Now(),
+		HistoryElder:          0,
+		ExpHistoryLatest:      7000,
+	})
+
+	// default asc, w/o cursor
+	pq, err = GetPageQuery(ledgerState, req)
+	assert.NoError(t, err)
+	assert.Empty(t, pq.Cursor)
+	assert.NoError(t, validateAndAdjustCursor(ledgerState, &pq))
+	assert.Equal(t, toid.AfterLedger(0).String(), pq.Cursor)
+	assert.Equal(t, uint64(2), pq.Limit)
+	assert.Equal(t, "asc", pq.Order)
+
+	// default asc, w/ cursor
+	pq, err = GetPageQuery(ledgerState, reqWithCursor)
+	assert.NoError(t, err)
+	assert.Equal(t, cursor, pq.Cursor)
+	assert.NoError(t, validateAndAdjustCursor(ledgerState, &pq))
+	assert.Equal(t, cursor, pq.Cursor)
+	assert.Equal(t, uint64(2), pq.Limit)
+	assert.Equal(t, "asc", pq.Order)
+
+}
+
+func TestGetPageQueryWithoutCursor(t *testing.T) {
+	ledgerState := &ledger.State{}
+
+	validateCursor := func(limit uint64, order string, expectedCursor string) {
+		req := makeTestActionRequest(fmt.Sprintf("/foo-bar/blah?limit=%d&order=%s", limit, order), testURLParams())
+		pq, err := GetPageQuery(ledgerState, req)
+		assert.NoError(t, err)
+		assert.Empty(t, pq.Cursor)
+		assert.NoError(t, validateAndAdjustCursor(ledgerState, &pq))
+		assert.Equal(t, expectedCursor, pq.Cursor)
+		assert.Equal(t, limit, pq.Limit)
+		assert.Equal(t, order, pq.Order)
+	}
+
+	// truncated history
+	ledgerState.SetHorizonStatus(ledger.HorizonStatus{
+		HistoryLatest:         7000,
+		HistoryLatestClosedAt: time.Now(),
+		HistoryElder:          300,
+		ExpHistoryLatest:      7000,
+	})
+
+	validateCursor(2, "asc", toid.AfterLedger(299).String())
+	validateCursor(2, "desc", "")
+
+	// full history
+	ledgerState.SetHorizonStatus(ledger.HorizonStatus{
+		HistoryLatest:         7000,
+		HistoryLatestClosedAt: time.Now(),
+		HistoryElder:          0,
+		ExpHistoryLatest:      7000,
+	})
+
+	validateCursor(2, "asc", toid.AfterLedger(0).String())
+	validateCursor(2, "desc", "")
+}
+
+func TestValidateAndAdjustCursor(t *testing.T) {
+	ledgerState := &ledger.State{}
+
+	validateCursor := func(cursor string, limit uint64, order string, expectedCursor string, expectedError error) {
+		pq := db2.PageQuery{Cursor: cursor,
+			Limit: limit,
+			Order: order,
+		}
+		err := validateAndAdjustCursor(ledgerState, &pq)
+		if expectedError != nil {
+			assert.EqualError(t, expectedError, err.Error())
+		} else {
+			assert.NoError(t, err)
+		}
+		assert.Equal(t, expectedCursor, pq.Cursor)
+		assert.Equal(t, limit, pq.Limit)
+		assert.Equal(t, order, pq.Order)
+	}
+
+	// full history
+	ledgerState.SetHorizonStatus(ledger.HorizonStatus{
+		HistoryLatest:         7000,
+		HistoryLatestClosedAt: time.Now(),
+		HistoryElder:          0,
+		ExpHistoryLatest:      7000,
+	})
+
+	// invalid cursor
+	validateCursor("blah", 2, "asc", "blah", problem.BadRequest)
+	validateCursor("blah", 2, "desc", "blah", problem.BadRequest)
+
+	validateCursor(toid.AfterLedger(0).String(), 2, "asc", toid.AfterLedger(0).String(), nil)
+	validateCursor(toid.AfterLedger(200).String(), 2, "asc", toid.AfterLedger(200).String(), nil)
+	validateCursor(toid.AfterLedger(7001).String(), 2, "asc", toid.AfterLedger(7001).String(), nil)
+
+	validateCursor(toid.AfterLedger(0).String(), 2, "desc", toid.AfterLedger(0).String(), nil)
+	validateCursor(toid.AfterLedger(200).String(), 2, "desc", toid.AfterLedger(200).String(), nil)
+	validateCursor(toid.AfterLedger(7001).String(), 2, "desc", toid.AfterLedger(7001).String(), nil)
+
+	// truncated history
+	ledgerState.SetHorizonStatus(ledger.HorizonStatus{
+		HistoryLatest:         7000,
+		HistoryLatestClosedAt: time.Now(),
+		HistoryElder:          300,
+		ExpHistoryLatest:      7000,
+	})
+
+	// invalid cursor
+	validateCursor("blah", 2, "asc", "blah", problem.BadRequest)
+	validateCursor("blah", 2, "desc", "blah", problem.BadRequest)
+
+	// asc order
+	validateCursor(toid.AfterLedger(0).String(), 2, "asc", toid.AfterLedger(299).String(), nil)
+	validateCursor(toid.AfterLedger(200).String(), 2, "asc", toid.AfterLedger(299).String(), nil)
+	validateCursor(toid.AfterLedger(298).String(), 2, "asc", toid.AfterLedger(299).String(), nil)
+	validateCursor(toid.AfterLedger(299).String(), 2, "asc", toid.AfterLedger(299).String(), nil)
+	validateCursor(toid.AfterLedger(300).String(), 2, "asc", toid.AfterLedger(300).String(), nil)
+	validateCursor(toid.AfterLedger(301).String(), 2, "asc", toid.AfterLedger(301).String(), nil)
+	validateCursor(toid.AfterLedger(7001).String(), 2, "asc", toid.AfterLedger(7001).String(), nil)
+
+	// desc order
+	validateCursor(toid.AfterLedger(0).String(), 2, "desc", toid.AfterLedger(0).String(), hProblem.BeforeHistory)
+	validateCursor(toid.AfterLedger(200).String(), 2, "desc", toid.AfterLedger(200).String(), hProblem.BeforeHistory)
+	validateCursor(toid.AfterLedger(299).String(), 2, "desc", toid.AfterLedger(299).String(), hProblem.BeforeHistory)
+	validateCursor(toid.AfterLedger(300).String(), 2, "desc", toid.AfterLedger(300).String(), nil)
+	validateCursor(toid.AfterLedger(320).String(), 2, "desc", toid.AfterLedger(320).String(), nil)
+	validateCursor(toid.AfterLedger(7001).String(), 2, "desc", toid.AfterLedger(7001).String(), nil)
 }
 
 func TestGetString(t *testing.T) {

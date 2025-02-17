@@ -62,7 +62,7 @@ func TestLiquidityPoolWithdrawRoundTrip(t *testing.T) {
 		MinAmountB:      "0.2000000",
 	}
 
-	testOperationsMarshallingRoundtrip(t, []Operation{lpd}, false)
+	testOperationsMarshalingRoundtrip(t, []Operation{lpd}, false)
 
 	// with muxed accounts
 	lpd = &LiquidityPoolWithdraw{
@@ -73,5 +73,5 @@ func TestLiquidityPoolWithdrawRoundTrip(t *testing.T) {
 		MinAmountB:      "0.2000000",
 	}
 
-	testOperationsMarshallingRoundtrip(t, []Operation{lpd}, true)
+	testOperationsMarshalingRoundtrip(t, []Operation{lpd}, true)
 }

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/guregu/null"
+
 	"github.com/stellar/go/protocols/horizon/effects"
 	"github.com/stellar/go/services/horizon/internal/db2"
 	"github.com/stellar/go/services/horizon/internal/test"
@@ -17,57 +18,72 @@ func TestEffectsForLiquidityPool(t *testing.T) {
 	defer tt.Finish()
 	test.ResetHorizonDB(t, tt.HorizonDB)
 	q := &Q{tt.HorizonSession()}
+	tt.Assert.NoError(q.Begin(tt.Ctx))
 
 	// Insert Effect
 	address := "GAQAA5L65LSYH7CQ3VTJ7F3HHLGCL3DSLAR2Y47263D56MNNGHSQSTVY"
 	muxedAddres := "MAQAA5L65LSYH7CQ3VTJ7F3HHLGCL3DSLAR2Y47263D56MNNGHSQSAAAAAAAAAAE2LP26"
-	accountIDs, err := q.CreateAccounts(tt.Ctx, []string{address}, 1)
-	tt.Assert.NoError(err)
+	accountLoader := NewAccountLoader(ConcurrentInserts)
 
-	builder := q.NewEffectBatchInsertBuilder(2)
+	builder := q.NewEffectBatchInsertBuilder()
 	sequence := int32(56)
 	details, err := json.Marshal(map[string]string{
 		"amount":     "1000.0000000",
 		"asset_type": "native",
 	})
+	tt.Assert.NoError(err)
 	opID := toid.New(sequence, 1, 1).ToInt64()
-	err = builder.Add(tt.Ctx,
-		accountIDs[address],
+	tt.Assert.NoError(builder.Add(
+		accountLoader.GetFuture(address),
 		null.StringFrom(muxedAddres),
 		opID,
 		1,
 		3,
 		details,
-	)
-	tt.Assert.NoError(err)
+	))
 
-	err = builder.Exec(tt.Ctx)
-	tt.Assert.NoError(err)
+	tt.Assert.NoError(accountLoader.Exec(tt.Ctx, q))
+	tt.Assert.NoError(builder.Exec(tt.Ctx, q))
 
 	// Insert Liquidity Pool history
 	liquidityPoolID := "abcde"
-	toInternalID, err := q.CreateHistoryLiquidityPools(tt.Ctx, []string{liquidityPoolID}, 2)
-	tt.Assert.NoError(err)
-	operationBuilder := q.NewOperationLiquidityPoolBatchInsertBuilder(2)
-	tt.Assert.NoError(err)
-	internalID, ok := toInternalID[liquidityPoolID]
-	tt.Assert.True(ok)
-	err = operationBuilder.Add(tt.Ctx, opID, internalID)
-	tt.Assert.NoError(err)
-	err = operationBuilder.Exec(tt.Ctx)
-	tt.Assert.NoError(err)
+	lpLoader := NewLiquidityPoolLoader(ConcurrentInserts)
 
-	var result []Effect
-	err = q.Effects().ForLiquidityPool(tt.Ctx, db2.PageQuery{
+	operationBuilder := q.NewOperationLiquidityPoolBatchInsertBuilder()
+	tt.Assert.NoError(operationBuilder.Add(opID, lpLoader.GetFuture(liquidityPoolID)))
+	tt.Assert.NoError(lpLoader.Exec(tt.Ctx, q))
+	tt.Assert.NoError(operationBuilder.Exec(tt.Ctx, q))
+
+	tt.Assert.NoError(q.Commit())
+
+	var effects []Effect
+	effects, err = q.EffectsForLiquidityPool(tt.Ctx, liquidityPoolID, db2.PageQuery{
 		Cursor: "0-0",
 		Order:  "asc",
 		Limit:  10,
-	}, liquidityPoolID).Select(tt.Ctx, &result)
+	}, 0)
 	tt.Assert.NoError(err)
 
-	tt.Assert.Len(result, 1)
-	tt.Assert.Equal(result[0].Account, address)
+	tt.Assert.Len(effects, 1)
+	effect := effects[0]
+	tt.Assert.Equal(effect.Account, address)
 
+	effects, err = q.EffectsForLiquidityPool(tt.Ctx, liquidityPoolID, db2.PageQuery{
+		Cursor: fmt.Sprintf("%d-0", toid.New(sequence+2, 0, 0).ToInt64()),
+		Order:  "desc",
+		Limit:  200,
+	}, sequence-3)
+	tt.Require.NoError(err)
+	tt.Require.Len(effects, 1)
+	tt.Require.Equal(effects[0], effect)
+
+	effects, err = q.EffectsForLiquidityPool(tt.Ctx, liquidityPoolID, db2.PageQuery{
+		Cursor: fmt.Sprintf("%d-0", toid.New(sequence+5, 0, 0).ToInt64()),
+		Order:  "desc",
+		Limit:  200,
+	}, sequence+2)
+	tt.Require.NoError(err)
+	tt.Require.Empty(effects)
 }
 
 func TestEffectsForTrustlinesSponsorshipEmptyAssetType(t *testing.T) {
@@ -75,13 +91,13 @@ func TestEffectsForTrustlinesSponsorshipEmptyAssetType(t *testing.T) {
 	defer tt.Finish()
 	test.ResetHorizonDB(t, tt.HorizonDB)
 	q := &Q{tt.HorizonSession()}
+	tt.Assert.NoError(q.Begin(tt.Ctx))
 
 	address := "GAQAA5L65LSYH7CQ3VTJ7F3HHLGCL3DSLAR2Y47263D56MNNGHSQSTVY"
 	muxedAddres := "MAQAA5L65LSYH7CQ3VTJ7F3HHLGCL3DSLAR2Y47263D56MNNGHSQSAAAAAAAAAAE2LP26"
-	accountIDs, err := q.CreateAccounts(tt.Ctx, []string{address}, 1)
-	tt.Assert.NoError(err)
+	accountLoader := NewAccountLoader(ConcurrentInserts)
 
-	builder := q.NewEffectBatchInsertBuilder(1)
+	builder := q.NewEffectBatchInsertBuilder()
 	sequence := int32(56)
 	tests := []struct {
 		effectType        EffectType
@@ -141,25 +157,27 @@ func TestEffectsForTrustlinesSponsorshipEmptyAssetType(t *testing.T) {
 
 	for i, test := range tests {
 		var bytes []byte
-		bytes, err = json.Marshal(test.details)
+		bytes, err := json.Marshal(test.details)
 		tt.Require.NoError(err)
 
-		err = builder.Add(tt.Ctx,
-			accountIDs[address],
+		tt.Require.NoError(builder.Add(
+			accountLoader.GetFuture(address),
 			null.StringFrom(muxedAddres),
 			opID,
 			uint32(i),
 			test.effectType,
 			bytes,
-		)
-		tt.Require.NoError(err)
+		))
 	}
+	tt.Require.NoError(accountLoader.Exec(tt.Ctx, q))
+	tt.Require.NoError(builder.Exec(tt.Ctx, q))
+	tt.Assert.NoError(q.Commit())
 
-	err = builder.Exec(tt.Ctx)
-	tt.Require.NoError(err)
-
-	var results []Effect
-	err = q.Effects().Select(tt.Ctx, &results)
+	results, err := q.Effects(tt.Ctx, db2.PageQuery{
+		Cursor: "0-0",
+		Order:  "asc",
+		Limit:  200,
+	}, 0)
 	tt.Require.NoError(err)
 	tt.Require.Len(results, len(tests))
 

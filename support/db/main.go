@@ -21,6 +21,7 @@ import (
 
 	"github.com/Masterminds/squirrel"
 	"github.com/jmoiron/sqlx"
+
 	"github.com/stellar/go/support/errors"
 
 	// Enable postgres
@@ -40,6 +41,9 @@ var (
 	// ErrCancelled is an error returned by Session methods when request has
 	// been canceled (ex. context canceled).
 	ErrCancelled = errors.New("canceling statement due to user request")
+	// ErrAlreadyRolledback is an error returned by Session methods when the transaction
+	// containing the request has already been rolled back.
+	ErrAlreadyRolledback = errors.New("transaction has already been committed or rolled back")
 	// ErrConflictWithRecovery is an error returned by Session methods when
 	// read replica cancels the query due to conflict with about-to-be-applied
 	// WAL entries (https://www.postgresql.org/docs/current/hot-standby.html).
@@ -115,13 +119,18 @@ type Session struct {
 	// DB is the database connection that queries should be executed against.
 	DB *sqlx.DB
 
-	tx        *sqlx.Tx
-	txOptions *sql.TxOptions
+	tx            *sqlx.Tx
+	txCancel      context.CancelFunc
+	txOptions     *sql.TxOptions
+	errorHandlers []ErrorHandlerFunc
 }
 
+// dbErr - the Postgres error
+// ctx   - the caller's context
+type ErrorHandlerFunc func(dbErr error, ctx context.Context)
 type SessionInterface interface {
-	BeginTx(opts *sql.TxOptions) error
-	Begin() error
+	BeginTx(ctx context.Context, opts *sql.TxOptions) error
+	Begin(ctx context.Context) error
 	Rollback() error
 	Commit() error
 	GetTx() *sqlx.Tx
@@ -133,8 +142,8 @@ type SessionInterface interface {
 	GetRaw(ctx context.Context, dest interface{}, query string, args ...interface{}) error
 	Select(ctx context.Context, dest interface{}, query squirrel.Sqlizer) error
 	SelectRaw(ctx context.Context, dest interface{}, query string, args ...interface{}) error
-	Query(ctx context.Context, query squirrel.Sqlizer) (*sqlx.Rows, error)
-	QueryRaw(ctx context.Context, query string, args ...interface{}) (*sqlx.Rows, error)
+	Query(ctx context.Context, query squirrel.Sqlizer) (*Rows, error)
+	QueryRaw(ctx context.Context, query string, args ...interface{}) (*Rows, error)
 	GetTable(name string) *Table
 	Exec(ctx context.Context, query squirrel.Sqlizer) (sql.Result, error)
 	ExecRaw(ctx context.Context, query string, args ...interface{}) (sql.Result, error)
@@ -145,7 +154,7 @@ type SessionInterface interface {
 		start, end int64,
 		table string,
 		idCol string,
-	) error
+	) (int64, error)
 }
 
 // Table helps to build sql queries against a given table.  It logically

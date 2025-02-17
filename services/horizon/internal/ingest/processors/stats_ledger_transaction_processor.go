@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/stellar/go/ingest"
+	"github.com/stellar/go/support/db"
 	"github.com/stellar/go/xdr"
 )
 
@@ -12,6 +13,10 @@ import (
 // and entry types.
 type StatsLedgerTransactionProcessor struct {
 	results StatsLedgerTransactionProcessorResults
+}
+
+func NewStatsLedgerTransactionProcessor() *StatsLedgerTransactionProcessor {
+	return &StatsLedgerTransactionProcessor{}
 }
 
 // StatsLedgerTransactionProcessorResults contains results after running StatsLedgerTransactionProcessor.
@@ -49,9 +54,16 @@ type StatsLedgerTransactionProcessorResults struct {
 	OperationsSetTrustLineFlags             int64
 	OperationsLiquidityPoolDeposit          int64
 	OperationsLiquidityPoolWithdraw         int64
+	OperationsInvokeHostFunction            int64
+	OperationsExtendFootprintTtl            int64
+	OperationsRestoreFootprint              int64
 }
 
-func (p *StatsLedgerTransactionProcessor) ProcessTransaction(ctx context.Context, transaction ingest.LedgerTransaction) error {
+func (p *StatsLedgerTransactionProcessor) Flush(ctx context.Context, session db.SessionInterface) error {
+	return nil
+}
+
+func (p *StatsLedgerTransactionProcessor) ProcessTransaction(lcm xdr.LedgerCloseMeta, transaction ingest.LedgerTransaction) error {
 	p.results.Transactions++
 	ops := int64(len(transaction.Envelope.Operations()))
 	p.results.Operations += ops
@@ -115,12 +127,22 @@ func (p *StatsLedgerTransactionProcessor) ProcessTransaction(ctx context.Context
 			p.results.OperationsLiquidityPoolDeposit++
 		case xdr.OperationTypeLiquidityPoolWithdraw:
 			p.results.OperationsLiquidityPoolWithdraw++
+		case xdr.OperationTypeInvokeHostFunction:
+			p.results.OperationsInvokeHostFunction++
+		case xdr.OperationTypeExtendFootprintTtl:
+			p.results.OperationsExtendFootprintTtl++
+		case xdr.OperationTypeRestoreFootprint:
+			p.results.OperationsRestoreFootprint++
 		default:
 			panic(fmt.Sprintf("Unknown operation type: %d", op.Body.Type))
 		}
 	}
 
 	return nil
+}
+
+func (p *StatsLedgerTransactionProcessor) Name() string {
+	return "processors.StatsLedgerTransactionProcessor"
 }
 
 func (p *StatsLedgerTransactionProcessor) GetResults() StatsLedgerTransactionProcessorResults {
@@ -161,7 +183,12 @@ func (stats *StatsLedgerTransactionProcessorResults) Map() map[string]interface{
 		"stats_operations_clawback_claimable_balance":       stats.OperationsClawbackClaimableBalance,
 		"stats_operations_liquidity_pool_deposit":           stats.OperationsLiquidityPoolDeposit,
 		"stats_operations_liquidity_pool_withdraw":          stats.OperationsLiquidityPoolWithdraw,
+		"stats_operations_invoke_host_function":             stats.OperationsInvokeHostFunction,
 	}
+}
+
+func (p *StatsLedgerTransactionProcessor) ResetStats() {
+	p.results = StatsLedgerTransactionProcessorResults{}
 }
 
 // Ensure the StatsChangeProcessor conforms to the ChangeProcessor interface.

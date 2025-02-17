@@ -3,22 +3,29 @@
 package ingest
 
 import (
+	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"io/ioutil"
 	"path/filepath"
 	"testing"
 
+	"github.com/stretchr/testify/suite"
+
 	"github.com/stellar/go/ingest"
 	"github.com/stellar/go/ingest/ledgerbackend"
 	"github.com/stellar/go/services/horizon/internal/test"
 	"github.com/stellar/go/xdr"
-	"github.com/stretchr/testify/suite"
 )
 
-type memoryChangeReader xdr.LedgerEntryChanges
+type memoryChangeReader struct {
+	changes        xdr.LedgerEntryChanges
+	bucketListHash xdr.Hash
+	verified       bool
+}
 
-func loadChanges(path string) (*memoryChangeReader, error) {
+func loadChanges(bucketListHash xdr.Hash, path string) (*memoryChangeReader, error) {
 	contents, err := ioutil.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -29,23 +36,36 @@ func loadChanges(path string) (*memoryChangeReader, error) {
 		return nil, err
 	}
 
-	reader := memoryChangeReader(entryChanges)
-	return &reader, nil
+	return &memoryChangeReader{
+		changes:        entryChanges,
+		bucketListHash: bucketListHash,
+	}, nil
 }
 
 func (r *memoryChangeReader) Read() (ingest.Change, error) {
-	entryChanges := *r
-	if len(entryChanges) == 0 {
+	if len(r.changes) == 0 {
 		return ingest.Change{}, io.EOF
 	}
 
-	change := entryChanges[0]
-	*r = entryChanges[1:]
+	change := r.changes[0]
+	r.changes = r.changes[1:]
 	return ingest.Change{
 		Type: change.State.Data.Type,
 		Post: change.State,
 		Pre:  nil,
 	}, nil
+}
+
+func (r *memoryChangeReader) VerifyBucketList(expectedHash xdr.Hash) error {
+	if !bytes.Equal(r.bucketListHash[:], expectedHash[:]) {
+		return fmt.Errorf(
+			"bucket list hash of history archive does not match expected hash: %#x %#x",
+			r.bucketListHash,
+			expectedHash,
+		)
+	}
+	r.verified = true
+	return nil
 }
 
 func (r *memoryChangeReader) Close() error {
@@ -61,6 +81,7 @@ type DBTestSuite struct {
 	ctx            context.Context
 	sampleFile     string
 	sequence       uint32
+	checkpointHash xdr.Hash
 	ledgerBackend  *ledgerbackend.MockDatabaseBackend
 	historyAdapter *mockHistoryArchiveAdapter
 	system         *system
@@ -76,16 +97,17 @@ func (s *DBTestSuite) SetupTest() {
 	// go test -v -timeout 5m --tags=update  github.com/stellar/go/services/horizon/internal/ingest -run "^(TestUpdateSampleChanges)$"
 	// and commit the new file to the git repo.
 	s.sampleFile = filepath.Join("testdata", "sample-changes.xdr")
-
+	s.checkpointHash = xdr.Hash{1, 2, 3}
 	s.ledgerBackend = &ledgerbackend.MockDatabaseBackend{}
 	s.historyAdapter = &mockHistoryArchiveAdapter{}
+
 	var err error
 	sIface, err := NewSystem(Config{
-		CoreSession:              s.tt.CoreSession(),
 		HistorySession:           s.tt.HorizonSession(),
 		HistoryArchiveURLs:       []string{"http://ignore.test"},
 		DisableStateVerification: false,
 		CheckpointFrequency:      64,
+		CoreProtocolVersionFn:    func(string) (uint, error) { return 21, nil },
 	})
 	s.Assert().NoError(err)
 	s.system = sIface.(*system)
@@ -100,18 +122,18 @@ func (s *DBTestSuite) SetupTest() {
 }
 
 func (s *DBTestSuite) mockChangeReader() {
-	changeReader, err := loadChanges(s.sampleFile)
+	changeReader, err := loadChanges(s.checkpointHash, s.sampleFile)
 	s.Assert().NoError(err)
+	s.T().Cleanup(func() {
+		s.tt.Assert.True(changeReader.verified)
+	})
 	s.historyAdapter.On("GetState", s.ctx, s.sequence).
 		Return(ingest.ChangeReader(changeReader), nil).Once()
 }
 func (s *DBTestSuite) setupMocksForBuildState() {
-	checkpointHash := xdr.Hash{1, 2, 3}
 	s.historyAdapter.On("GetLatestLedgerSequence").
 		Return(s.sequence, nil).Once()
 	s.mockChangeReader()
-	s.historyAdapter.On("BucketListHash", s.sequence).
-		Return(checkpointHash, nil).Once()
 
 	s.ledgerBackend.On("IsPrepared", s.ctx, ledgerbackend.UnboundedRange(s.sequence)).Return(true, nil).Once()
 	s.ledgerBackend.On("GetLedger", s.ctx, s.sequence).
@@ -121,7 +143,7 @@ func (s *DBTestSuite) setupMocksForBuildState() {
 					LedgerHeader: xdr.LedgerHeaderHistoryEntry{
 						Header: xdr.LedgerHeader{
 							LedgerSeq:      xdr.Uint32(s.sequence),
-							BucketListHash: checkpointHash,
+							BucketListHash: s.checkpointHash,
 						},
 					},
 				},
@@ -149,7 +171,7 @@ func (s *DBTestSuite) TestBuildState() {
 	s.Assert().Equal(s.sequence, resume.latestSuccessfullyProcessedLedger)
 
 	s.mockChangeReader()
-	s.Assert().NoError(s.system.verifyState(false))
+	s.Assert().NoError(s.system.verifyState(false, s.sequence, s.checkpointHash))
 }
 
 func (s *DBTestSuite) TestVersionMismatchTriggersRebuild() {

@@ -1,0 +1,4 @@
+[stellar_core_config]
+network="pubnet"
+captive_core_toml_path = "test/captive-core-test.cfg"
+stellar_core_binary_path = "test/stellar-core"

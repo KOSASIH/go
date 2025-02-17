@@ -112,6 +112,7 @@ func TestStreamAllLiquidity(t *testing.T) {
 		pools = append(pools, pool)
 		return nil
 	})
+	tt.Assert.NoError(err)
 	sort.Slice(pools, func(i, j int) bool {
 		return pools[i].PoolID < pools[j].PoolID
 	})

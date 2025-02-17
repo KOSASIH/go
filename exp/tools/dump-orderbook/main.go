@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"flag"
-	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -12,6 +11,7 @@ import (
 	"github.com/stellar/go/historyarchive"
 	"github.com/stellar/go/ingest"
 	"github.com/stellar/go/support/log"
+	"github.com/stellar/go/support/storage"
 	"github.com/stellar/go/xdr"
 )
 
@@ -109,16 +109,20 @@ func archive(testnet bool) (*historyarchive.Archive, error) {
 	if testnet {
 		return historyarchive.Connect(
 			"https://history.stellar.org/prd/core-testnet/core_testnet_001",
-			historyarchive.ConnectOptions{
-				UserAgent: "dump-orderbook",
+			historyarchive.ArchiveOptions{
+				ConnectOptions: storage.ConnectOptions{
+					UserAgent: "dump-orderbook",
+				},
 			},
 		)
 	}
 
 	return historyarchive.Connect(
-		fmt.Sprintf("https://history.stellar.org/prd/core-live/core_live_001/"),
-		historyarchive.ConnectOptions{
-			UserAgent: "dump-orderbook",
+		"https://history.stellar.org/prd/core-live/core_live_001/",
+		historyarchive.ArchiveOptions{
+			ConnectOptions: storage.ConnectOptions{
+				UserAgent: "dump-orderbook",
+			},
 		},
 	)
 }

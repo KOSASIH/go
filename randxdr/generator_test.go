@@ -20,6 +20,7 @@ func TestRandLedgerCloseMeta(t *testing.T) {
 			shape,
 			[]Preset{
 				{IsNestedInnerSet, SetVecLen(0)},
+				{IsDeepAuthorizedInvocationTree, SetVecLen(0)},
 			},
 		)
 		// check that the goxdr representation matches the go-xdr representation
@@ -39,6 +40,7 @@ func TestGeneratorIsDeterministic(t *testing.T) {
 		shape,
 		[]Preset{
 			{IsNestedInnerSet, SetVecLen(0)},
+			{IsDeepAuthorizedInvocationTree, SetVecLen(0)},
 		},
 	)
 
@@ -48,6 +50,7 @@ func TestGeneratorIsDeterministic(t *testing.T) {
 		otherShape,
 		[]Preset{
 			{IsNestedInnerSet, SetVecLen(0)},
+			{IsDeepAuthorizedInvocationTree, SetVecLen(0)},
 		},
 	)
 

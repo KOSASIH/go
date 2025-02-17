@@ -10,8 +10,8 @@ type MockQEffects struct {
 	mock.Mock
 }
 
-func (m *MockQEffects) NewEffectBatchInsertBuilder(maxBatchSize int) EffectBatchInsertBuilder {
-	a := m.Called(maxBatchSize)
+func (m *MockQEffects) NewEffectBatchInsertBuilder() EffectBatchInsertBuilder {
+	a := m.Called()
 	return a.Get(0).(EffectBatchInsertBuilder)
 }
 

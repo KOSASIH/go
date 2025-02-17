@@ -43,7 +43,8 @@ var _ = Describe("xdr.AccountId#LedgerKey()", func() {
 		err := aid.SetAddress("GCR22L3WS7TP72S4Z27YTO6JIQYDJK2KLS2TQNHK6Y7XYPA3AGT3X4FH")
 		Expect(err).ShouldNot(HaveOccurred())
 
-		key := aid.LedgerKey()
+		key, err := aid.LedgerKey()
+		Expect(err).ShouldNot(HaveOccurred())
 		packed := key.MustAccount().AccountId
 		Expect(packed.Equals(aid)).To(BeTrue())
 	})

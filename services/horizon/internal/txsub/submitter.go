@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	"github.com/stellar/go/clients/stellarcore"
 	proto "github.com/stellar/go/protocols/stellarcore"
 	"github.com/stellar/go/support/errors"
@@ -14,12 +16,12 @@ import (
 // NewDefaultSubmitter returns a new, simple Submitter implementation
 // that submits directly to the stellar-core at `url` using the http client
 // `h`.
-func NewDefaultSubmitter(h *http.Client, url string) Submitter {
+func NewDefaultSubmitter(h *http.Client, url string, registry *prometheus.Registry) Submitter {
 	return &submitter{
-		StellarCore: &stellarcore.Client{
+		StellarCore: stellarcore.NewClientWithMetrics(stellarcore.Client{
 			HTTP: h,
 			URL:  url,
-		},
+		}, registry, "txsub"),
 		Log: log.DefaultLogger.WithField("service", "txsub.submitter"),
 	}
 }
@@ -28,13 +30,13 @@ func NewDefaultSubmitter(h *http.Client, url string) Submitter {
 // submits directly to the configured stellar-core instance using the
 // configured http client.
 type submitter struct {
-	StellarCore *stellarcore.Client
+	StellarCore stellarcore.ClientWithMetrics
 	Log         *log.Entry
 }
 
 // Submit sends the provided envelope to stellar-core and parses the response into
 // a SubmissionResult
-func (sub *submitter) Submit(ctx context.Context, env string) (result SubmissionResult) {
+func (sub *submitter) Submit(ctx context.Context, rawTx string) (result SubmissionResult) {
 	start := time.Now()
 	defer func() {
 		result.Duration = time.Since(start)
@@ -44,7 +46,7 @@ func (sub *submitter) Submit(ctx context.Context, env string) (result Submission
 		}).Info("Submitter result")
 	}()
 
-	cresp, err := sub.StellarCore.SubmitTransaction(ctx, env)
+	cresp, err := sub.StellarCore.SubmitTx(ctx, rawTx)
 	if err != nil {
 		result.Err = errors.Wrap(err, "failed to submit")
 		return
@@ -58,7 +60,7 @@ func (sub *submitter) Submit(ctx context.Context, env string) (result Submission
 
 	switch cresp.Status {
 	case proto.TXStatusError:
-		result.Err = &FailedTransactionError{cresp.Error}
+		result.Err = &FailedTransactionError{cresp.Error, cresp.DiagnosticEvents}
 	case proto.TXStatusPending, proto.TXStatusDuplicate, proto.TXStatusTryAgainLater:
 		//noop.  A nil Err indicates success
 	default:

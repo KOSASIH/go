@@ -14,7 +14,7 @@ services:
 
   core:
     platform: linux/amd64
-    image: ${CORE_IMAGE:-stellar/stellar-core:18}
+    image: ${CORE_IMAGE:-stellar/stellar-core:21}
     depends_on:
       - core-postgres
       - core-upgrade
@@ -37,6 +37,7 @@ services:
       - HISTORY_ARCHIVE_URLS=http://host.docker.internal:1570
       - NETWORK_PASSPHRASE=Standalone Network ; February 2017
       - CAPTIVE_CORE_CONFIG_APPEND_PATH=/captive-core-standalone.cfg
+      - STELLAR_CORE_URL=http://host.docker.internal:11626
     volumes:
       - ./captive-core-standalone.cfg:/captive-core-standalone.cfg
 

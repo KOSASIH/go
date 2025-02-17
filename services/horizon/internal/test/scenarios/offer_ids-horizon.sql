@@ -350,6 +350,7 @@ ALTER SEQUENCE history_operation_participants_id_seq OWNED BY history_operation_
 --
 -- Name: history_operations; Type: TABLE; Schema: public; Owner: -
 --
+-- added is_payment=false default to schema, rather than change insert lines
 
 CREATE TABLE history_operations (
     id bigint NOT NULL,
@@ -358,6 +359,7 @@ CREATE TABLE history_operations (
     type integer NOT NULL,
     details jsonb,
     source_account character varying(64) DEFAULT ''::character varying NOT NULL
+    is_payment boolean default false
 );
 
 

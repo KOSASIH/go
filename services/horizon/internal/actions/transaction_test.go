@@ -6,6 +6,7 @@ import (
 
 	"github.com/stellar/go/protocols/horizon"
 	"github.com/stellar/go/services/horizon/internal/db2/history"
+	"github.com/stellar/go/services/horizon/internal/ledger"
 	"github.com/stellar/go/services/horizon/internal/test"
 	supportProblem "github.com/stellar/go/support/render/problem"
 )
@@ -16,7 +17,10 @@ func TestGetTransactionsHandler(t *testing.T) {
 	defer tt.Finish()
 
 	q := &history.Q{tt.HorizonSession()}
-	handler := GetTransactionsHandler{}
+	handler := GetTransactionsHandler{
+		LedgerState: &ledger.State{},
+	}
+	handler.LedgerState.SetStatus(tt.Scenario("base"))
 
 	// filter by account
 	records, err := handler.GetResourcePage(
@@ -149,12 +153,20 @@ func checkOuterHashResponse(
 }
 
 func TestFeeBumpTransactionPage(t *testing.T) {
+
 	tt := test.Start(t)
 	defer tt.Finish()
 	test.ResetHorizonDB(t, tt.HorizonDB)
 	q := &history.Q{tt.HorizonSession()}
 	fixture := history.FeeBumpScenario(tt, q, true)
-	handler := GetTransactionsHandler{}
+	handler := GetTransactionsHandler{
+		LedgerState: &ledger.State{},
+	}
+	handler.LedgerState.SetHorizonStatus(ledger.HorizonStatus{
+		HistoryLatest:    fixture.Ledger.Sequence,
+		HistoryElder:     fixture.Ledger.Sequence,
+		ExpHistoryLatest: uint32(fixture.Ledger.Sequence),
+	})
 
 	records, err := handler.GetResourcePage(
 		httptest.NewRecorder(),

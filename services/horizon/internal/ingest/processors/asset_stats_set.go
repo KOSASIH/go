@@ -4,7 +4,6 @@ import (
 	"math/big"
 
 	"github.com/stellar/go/ingest"
-
 	"github.com/stellar/go/services/horizon/internal/db2/history"
 	"github.com/stellar/go/support/errors"
 	"github.com/stellar/go/xdr"
@@ -30,7 +29,17 @@ type assetStatBalances struct {
 	Unauthorized                    *big.Int
 }
 
-func (a *assetStatBalances) Parse(b *history.ExpAssetStatBalances) error {
+func newAssetStatBalance() assetStatBalances {
+	return assetStatBalances{
+		Authorized:                      big.NewInt(0),
+		AuthorizedToMaintainLiabilities: big.NewInt(0),
+		ClaimableBalances:               big.NewInt(0),
+		LiquidityPools:                  big.NewInt(0),
+		Unauthorized:                    big.NewInt(0),
+	}
+}
+
+func (a *assetStatBalances) Parse(b history.ExpAssetStatBalances) error {
 	authorized, ok := new(big.Int).SetString(b.Authorized, 10)
 	if !ok {
 		return errors.New("Error parsing: " + b.Authorized)
@@ -100,13 +109,22 @@ func (value assetStatValue) ConvertToHistoryObject() history.ExpAssetStat {
 		AssetIssuer: value.assetIssuer,
 		Accounts:    value.accounts,
 		Balances:    balances,
-		Amount:      balances.Authorized,
-		NumAccounts: value.accounts.Authorized,
 	}
 }
 
-// AssetStatSet represents a collection of asset stats
-type AssetStatSet map[assetStatKey]*assetStatValue
+// AssetStatSet represents a collection of asset stats and a mapping
+// of Soroban contract IDs to classic assets (which is unique to each
+// network).
+type AssetStatSet struct {
+	classicAssetStats map[assetStatKey]*assetStatValue
+}
+
+// NewAssetStatSet constructs a new AssetStatSet instance
+func NewAssetStatSet() AssetStatSet {
+	return AssetStatSet{
+		classicAssetStats: map[assetStatKey]*assetStatValue{},
+	}
+}
 
 type delta struct {
 	Authorized                      int64
@@ -142,16 +160,10 @@ func (s AssetStatSet) addDelta(asset xdr.Asset, deltaBalances, deltaAccounts del
 		return errors.Wrap(err, "could not extract asset info from trustline")
 	}
 
-	current, ok := s[key]
+	current, ok := s.classicAssetStats[key]
 	if !ok {
-		current = &assetStatValue{assetStatKey: key, balances: assetStatBalances{
-			Authorized:                      big.NewInt(0),
-			AuthorizedToMaintainLiabilities: big.NewInt(0),
-			ClaimableBalances:               big.NewInt(0),
-			LiquidityPools:                  big.NewInt(0),
-			Unauthorized:                    big.NewInt(0),
-		}}
-		s[key] = current
+		current = &assetStatValue{assetStatKey: key, balances: newAssetStatBalance()}
+		s.classicAssetStats[key] = current
 	}
 
 	current.accounts.Authorized += int32(deltaAccounts.Authorized)
@@ -171,7 +183,7 @@ func (s AssetStatSet) addDelta(asset xdr.Asset, deltaBalances, deltaAccounts del
 	//  OR
 	// numAccounts == 0 && amount != 0 (ex. issuer issued an asset)
 	if current.balances.IsZero() && current.accounts.IsZero() {
-		delete(s, key)
+		delete(s.classicAssetStats, key)
 	}
 
 	return nil
@@ -206,7 +218,7 @@ func (s AssetStatSet) AddTrustline(change ingest.Change) error {
 		deltaAccounts.addByFlags(post.Flags, 1)
 		deltaBalances.addByFlags(post.Flags, int64(post.Balance))
 	}
-	if asset.Type == xdr.AssetTypeAssetTypePoolShare {
+	if asset.Type == xdr.AssetTypeAssetTypePoolShare || asset.Type == xdr.AssetTypeAssetTypeNative {
 		return nil
 	}
 
@@ -325,23 +337,11 @@ func (s AssetStatSet) AddClaimableBalance(change ingest.Change) error {
 	return nil
 }
 
-// Remove deletes an asset stat from the set
-func (s AssetStatSet) Remove(assetType xdr.AssetType, assetCode string, assetIssuer string) (history.ExpAssetStat, bool) {
-	key := assetStatKey{assetType: assetType, assetIssuer: assetIssuer, assetCode: assetCode}
-	value, ok := s[key]
-	if !ok {
-		return history.ExpAssetStat{}, false
-	}
-
-	delete(s, key)
-
-	return value.ConvertToHistoryObject(), true
-}
-
 // All returns a list of all `history.ExpAssetStat` contained within the set
+// along with all contract id attribution changes in the set.
 func (s AssetStatSet) All() []history.ExpAssetStat {
-	assetStats := make([]history.ExpAssetStat, 0, len(s))
-	for _, value := range s {
+	assetStats := make([]history.ExpAssetStat, 0, len(s.classicAssetStats))
+	for _, value := range s.classicAssetStats {
 		assetStats = append(assetStats, value.ConvertToHistoryObject())
 	}
 	return assetStats

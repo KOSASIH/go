@@ -22,7 +22,7 @@ func (handler GetLedgersHandler) GetResourcePage(w HeaderWriter, r *http.Request
 		return nil, err
 	}
 
-	err = validateCursorWithinHistory(handler.LedgerState, pq)
+	err = validateAndAdjustCursor(handler.LedgerState, &pq)
 	if err != nil {
 		return nil, err
 	}
@@ -33,7 +33,8 @@ func (handler GetLedgersHandler) GetResourcePage(w HeaderWriter, r *http.Request
 	}
 
 	var records []history.Ledger
-	if err = historyQ.Ledgers().Page(pq).Select(r.Context(), &records); err != nil {
+	err = historyQ.Ledgers().Page(pq, handler.LedgerState.CurrentStatus().HistoryElder).Select(r.Context(), &records)
+	if err != nil {
 		return nil, err
 	}
 

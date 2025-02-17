@@ -10,12 +10,13 @@ import (
 	sq "github.com/Masterminds/squirrel"
 	"github.com/guregu/null"
 
+	"github.com/stretchr/testify/assert"
+
 	"github.com/stellar/go/ingest"
 	"github.com/stellar/go/network"
 	"github.com/stellar/go/services/horizon/internal/test"
 	"github.com/stellar/go/toid"
 	"github.com/stellar/go/xdr"
-	"github.com/stretchr/testify/assert"
 )
 
 func ledgerToMap(ledger Ledger) map[string]interface{} {
@@ -247,29 +248,31 @@ func FeeBumpScenario(tt *test.T, q *Q, successful bool) FeeBumpFixture {
 		hash:          "edba3051b2f2d9b713e8a08709d631eccb72c59864ff3c564c68792271bb24a7",
 	})
 	ctx := context.Background()
-	insertBuilder := q.NewTransactionBatchInsertBuilder(2)
-	prefilterInsertBuilder := q.NewTransactionFilteredTmpBatchInsertBuilder(2)
+	tt.Assert.NoError(q.Begin(ctx))
+
+	insertBuilder := q.NewTransactionBatchInsertBuilder()
+	prefilterInsertBuilder := q.NewTransactionFilteredTmpBatchInsertBuilder()
 	// include both fee bump and normal transaction in the same batch
 	// to make sure both kinds of transactions can be inserted using a single exec statement
-	tt.Assert.NoError(insertBuilder.Add(ctx, feeBumpTransaction, sequence))
-	tt.Assert.NoError(insertBuilder.Add(ctx, normalTransaction, sequence))
-	tt.Assert.NoError(insertBuilder.Exec(ctx))
+	tt.Assert.NoError(insertBuilder.Add(feeBumpTransaction, sequence))
+	tt.Assert.NoError(insertBuilder.Add(normalTransaction, sequence))
+	tt.Assert.NoError(insertBuilder.Exec(ctx, q))
 
-	tt.Assert.NoError(prefilterInsertBuilder.Add(ctx, feeBumpTransaction, sequence))
-	tt.Assert.NoError(prefilterInsertBuilder.Add(ctx, normalTransaction, sequence))
-	tt.Assert.NoError(prefilterInsertBuilder.Exec(ctx))
+	tt.Assert.NoError(prefilterInsertBuilder.Add(feeBumpTransaction, sequence))
+	tt.Assert.NoError(prefilterInsertBuilder.Add(normalTransaction, sequence))
+	tt.Assert.NoError(prefilterInsertBuilder.Exec(ctx, q))
 
 	account := fixture.Envelope.SourceAccount().ToAccountId()
 	feeBumpAccount := fixture.Envelope.FeeBumpAccount().ToAccountId()
 
-	opBuilder := q.NewOperationBatchInsertBuilder(1)
+	opBuilder := q.NewOperationBatchInsertBuilder()
 	details, err := json.Marshal(map[string]string{
 		"bump_to": "98",
 	})
+
 	tt.Assert.NoError(err)
 
 	tt.Assert.NoError(opBuilder.Add(
-		ctx,
 		toid.New(fixture.Ledger.Sequence, 1, 1).ToInt64(),
 		toid.New(fixture.Ledger.Sequence, 1, 0).ToInt64(),
 		1,
@@ -277,27 +280,30 @@ func FeeBumpScenario(tt *test.T, q *Q, successful bool) FeeBumpFixture {
 		details,
 		account.Address(),
 		null.String{},
+		false,
 	))
-	tt.Assert.NoError(opBuilder.Exec(ctx))
+	tt.Assert.NoError(opBuilder.Exec(ctx, q))
 
-	effectBuilder := q.NewEffectBatchInsertBuilder(2)
+	effectBuilder := q.NewEffectBatchInsertBuilder()
 	details, err = json.Marshal(map[string]interface{}{"new_seq": 98})
 	tt.Assert.NoError(err)
 
-	accounIDs, err := q.CreateAccounts(ctx, []string{account.Address()}, 1)
-	tt.Assert.NoError(err)
+	accountLoader := NewAccountLoader(ConcurrentInserts)
 
 	err = effectBuilder.Add(
-		ctx,
-		accounIDs[account.Address()],
+		accountLoader.GetFuture(account.Address()),
 		null.String{},
 		toid.New(fixture.Ledger.Sequence, 1, 1).ToInt64(),
 		1,
 		EffectSequenceBumped,
 		details,
 	)
+
 	tt.Assert.NoError(err)
-	tt.Assert.NoError(effectBuilder.Exec(ctx))
+	tt.Assert.NoError(accountLoader.Exec(ctx, q.SessionInterface))
+	tt.Assert.NoError(effectBuilder.Exec(ctx, q.SessionInterface))
+
+	tt.Assert.NoError(q.Commit())
 
 	fixture.Transaction = Transaction{
 		TransactionWithoutLedger: TransactionWithoutLedger{

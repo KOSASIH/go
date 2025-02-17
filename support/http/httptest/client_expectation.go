@@ -1,6 +1,7 @@
 package httptest
 
 import (
+	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -83,6 +84,37 @@ func (ce *ClientExpectation) ReturnStringWithHeader(
 	}
 
 	return ce.Return(httpmock.ResponderFromResponse(&cResp))
+}
+
+// ReturnMultipleResults registers multiple sequential responses for a given client expectation.
+// Useful for testing retries
+func (ce *ClientExpectation) ReturnMultipleResults(responseSets []ResponseData) *ClientExpectation {
+	var allResponses []httpmock.Responder
+	for _, response := range responseSets {
+		resp := http.Response{
+			Status:     strconv.Itoa(response.Status),
+			StatusCode: response.Status,
+			Body:       httpmock.NewRespBodyFromString(response.Body),
+			Header:     response.Header,
+		}
+		allResponses = append(allResponses, httpmock.ResponderFromResponse(&resp))
+	}
+	responseIndex := 0
+	ce.Client.MockTransport.RegisterResponder(
+		ce.Method,
+		ce.URL,
+		func(req *http.Request) (*http.Response, error) {
+			if responseIndex >= len(allResponses) {
+				panic(fmt.Errorf("no responses available"))
+			}
+
+			resp := allResponses[responseIndex]
+			responseIndex++
+			return resp(req)
+		},
+	)
+
+	return ce
 }
 
 // ReturnJSONWithHeader causes this expectation to resolve to a json-based body with the provided

@@ -2,10 +2,14 @@
 // under the Apache License, Version 2.0. See the COPYING file at the root
 // of this distribution or at http://www.apache.org/licenses/LICENSE-2.0
 
+%#include "xdr/Stellar-contract.h"
 %#include "xdr/Stellar-ledger-entries.h"
 
 namespace stellar
 {
+
+// maximum number of operations per transaction
+const MAX_OPS_PER_TX = 100;
 
 union LiquidityPoolParameters switch (LiquidityPoolType type)
 {
@@ -57,7 +61,10 @@ enum OperationType
     CLAWBACK_CLAIMABLE_BALANCE = 20,
     SET_TRUST_LINE_FLAGS = 21,
     LIQUIDITY_POOL_DEPOSIT = 22,
-    LIQUIDITY_POOL_WITHDRAW = 23
+    LIQUIDITY_POOL_WITHDRAW = 23,
+    INVOKE_HOST_FUNCTION = 24,
+    EXTEND_FOOTPRINT_TTL = 25,
+    RESTORE_FOOTPRINT = 26
 };
 
 /* CreateAccount
@@ -465,6 +472,163 @@ struct LiquidityPoolWithdrawOp
     int64 minAmountB; // minimum amount of second asset to withdraw
 };
 
+enum HostFunctionType
+{
+    HOST_FUNCTION_TYPE_INVOKE_CONTRACT = 0,
+    HOST_FUNCTION_TYPE_CREATE_CONTRACT = 1,
+    HOST_FUNCTION_TYPE_UPLOAD_CONTRACT_WASM = 2,
+    HOST_FUNCTION_TYPE_CREATE_CONTRACT_V2 = 3
+};
+
+enum ContractIDPreimageType
+{
+    CONTRACT_ID_PREIMAGE_FROM_ADDRESS = 0,
+    CONTRACT_ID_PREIMAGE_FROM_ASSET = 1
+};
+ 
+union ContractIDPreimage switch (ContractIDPreimageType type)
+{
+case CONTRACT_ID_PREIMAGE_FROM_ADDRESS:
+    struct
+    {
+        SCAddress address;
+        uint256 salt;
+    } fromAddress;
+case CONTRACT_ID_PREIMAGE_FROM_ASSET:
+    Asset fromAsset;
+};
+
+struct CreateContractArgs
+{
+    ContractIDPreimage contractIDPreimage;
+    ContractExecutable executable;
+};
+
+struct CreateContractArgsV2
+{
+    ContractIDPreimage contractIDPreimage;
+    ContractExecutable executable;
+    // Arguments of the contract's constructor.
+    SCVal constructorArgs<>;
+};
+
+struct InvokeContractArgs {
+    SCAddress contractAddress;
+    SCSymbol functionName;
+    SCVal args<>;
+};
+
+union HostFunction switch (HostFunctionType type)
+{
+case HOST_FUNCTION_TYPE_INVOKE_CONTRACT:
+    InvokeContractArgs invokeContract;
+case HOST_FUNCTION_TYPE_CREATE_CONTRACT:
+    CreateContractArgs createContract;
+case HOST_FUNCTION_TYPE_UPLOAD_CONTRACT_WASM:
+    opaque wasm<>;
+case HOST_FUNCTION_TYPE_CREATE_CONTRACT_V2:
+    CreateContractArgsV2 createContractV2;
+};
+
+enum SorobanAuthorizedFunctionType
+{
+    SOROBAN_AUTHORIZED_FUNCTION_TYPE_CONTRACT_FN = 0,
+    SOROBAN_AUTHORIZED_FUNCTION_TYPE_CREATE_CONTRACT_HOST_FN = 1,
+    SOROBAN_AUTHORIZED_FUNCTION_TYPE_CREATE_CONTRACT_V2_HOST_FN = 2
+};
+
+union SorobanAuthorizedFunction switch (SorobanAuthorizedFunctionType type)
+{
+case SOROBAN_AUTHORIZED_FUNCTION_TYPE_CONTRACT_FN:
+    InvokeContractArgs contractFn;
+// This variant of auth payload for creating new contract instances
+// doesn't allow specifying the constructor arguments, creating contracts
+// with constructors that take arguments is only possible by authorizing
+// `SOROBAN_AUTHORIZED_FUNCTION_TYPE_CREATE_CONTRACT_V2_HOST_FN` 
+// (protocol 22+).
+case SOROBAN_AUTHORIZED_FUNCTION_TYPE_CREATE_CONTRACT_HOST_FN:
+    CreateContractArgs createContractHostFn;
+// This variant of auth payload for creating new contract instances
+// is only accepted in and after protocol 22. It allows authorizing the
+// contract constructor arguments.
+case SOROBAN_AUTHORIZED_FUNCTION_TYPE_CREATE_CONTRACT_V2_HOST_FN:
+    CreateContractArgsV2 createContractV2HostFn;
+};
+
+struct SorobanAuthorizedInvocation
+{
+    SorobanAuthorizedFunction function;
+    SorobanAuthorizedInvocation subInvocations<>;
+};
+
+struct SorobanAddressCredentials
+{
+    SCAddress address;
+    int64 nonce;
+    uint32 signatureExpirationLedger;    
+    SCVal signature;
+};
+
+enum SorobanCredentialsType
+{
+    SOROBAN_CREDENTIALS_SOURCE_ACCOUNT = 0,
+    SOROBAN_CREDENTIALS_ADDRESS = 1
+};
+
+union SorobanCredentials switch (SorobanCredentialsType type)
+{
+case SOROBAN_CREDENTIALS_SOURCE_ACCOUNT:
+    void;
+case SOROBAN_CREDENTIALS_ADDRESS:
+    SorobanAddressCredentials address;
+};
+
+/* Unit of authorization data for Soroban.
+
+   Represents an authorization for executing the tree of authorized contract 
+   and/or host function calls by the user defined by `credentials`.
+*/
+struct SorobanAuthorizationEntry
+{
+    SorobanCredentials credentials;
+    SorobanAuthorizedInvocation rootInvocation;
+};
+
+/* Upload Wasm, create, and invoke contracts in Soroban.
+
+    Threshold: med
+    Result: InvokeHostFunctionResult
+*/
+struct InvokeHostFunctionOp
+{
+    // Host function to invoke.
+    HostFunction hostFunction;
+    // Per-address authorizations for this host function.
+    SorobanAuthorizationEntry auth<>;
+};
+
+/* Extend the TTL of the entries specified in the readOnly footprint
+   so they will live at least extendTo ledgers from lcl.
+
+    Threshold: low
+    Result: ExtendFootprintTTLResult
+*/
+struct ExtendFootprintTTLOp
+{
+    ExtensionPoint ext;
+    uint32 extendTo;
+};
+
+/* Restore the archived entries specified in the readWrite footprint.
+
+    Threshold: low
+    Result: RestoreFootprintOp
+*/
+struct RestoreFootprintOp
+{
+    ExtensionPoint ext;
+};
+
 /* An operation is the lowest unit of work that a transaction does */
 struct Operation
 {
@@ -523,6 +687,12 @@ struct Operation
         LiquidityPoolDepositOp liquidityPoolDepositOp;
     case LIQUIDITY_POOL_WITHDRAW:
         LiquidityPoolWithdrawOp liquidityPoolWithdrawOp;
+    case INVOKE_HOST_FUNCTION:
+        InvokeHostFunctionOp invokeHostFunctionOp;
+    case EXTEND_FOOTPRINT_TTL:
+        ExtendFootprintTTLOp extendFootprintTTLOp;
+    case RESTORE_FOOTPRINT:
+        RestoreFootprintOp restoreFootprintOp;
     }
     body;
 };
@@ -540,11 +710,25 @@ case ENVELOPE_TYPE_POOL_REVOKE_OP_ID:
     struct
     {
         AccountID sourceAccount;
-        SequenceNumber seqNum;
+        SequenceNumber seqNum; 
         uint32 opNum;
         PoolID liquidityPoolID;
         Asset asset;
     } revokeID;
+case ENVELOPE_TYPE_CONTRACT_ID:
+    struct
+    {
+        Hash networkID;
+        ContractIDPreimage contractIDPreimage;
+    } contractID;
+case ENVELOPE_TYPE_SOROBAN_AUTHORIZATION:
+    struct
+    {
+        Hash networkID;
+        int64 nonce;
+        uint32 signatureExpirationLedger;
+        SorobanAuthorizedInvocation invocation;
+    } sorobanAuthorization;
 };
 
 enum MemoType
@@ -632,8 +816,94 @@ case PRECOND_V2:
     PreconditionsV2 v2;
 };
 
-// maximum number of operations per transaction
-const MAX_OPS_PER_TX = 100;
+// Ledger key sets touched by a smart contract transaction.
+struct LedgerFootprint
+{
+    LedgerKey readOnly<>;
+    LedgerKey readWrite<>;
+};
+
+enum ArchivalProofType
+{
+    EXISTENCE = 0,
+    NONEXISTENCE = 1
+};
+
+struct ArchivalProofNode
+{
+    uint32 index;
+    Hash hash;
+};
+
+typedef ArchivalProofNode ProofLevel<>;
+
+struct NonexistenceProofBody
+{
+    ColdArchiveBucketEntry entriesToProve<>;
+
+    // Vector of vectors, where proofLevels[level]
+    // contains all HashNodes that correspond with that level
+    ProofLevel proofLevels<>;
+};
+
+struct ExistenceProofBody
+{
+    LedgerKey keysToProve<>;
+
+    // Bounds for each key being proved, where bound[n]
+    // corresponds to keysToProve[n]
+    ColdArchiveBucketEntry lowBoundEntries<>;
+    ColdArchiveBucketEntry highBoundEntries<>;
+
+    // Vector of vectors, where proofLevels[level]
+    // contains all HashNodes that correspond with that level
+    ProofLevel proofLevels<>;
+};
+
+struct ArchivalProof
+{
+    uint32 epoch; // AST Subtree for this proof
+
+    union switch (ArchivalProofType t)
+    {
+    case EXISTENCE:
+        NonexistenceProofBody nonexistenceProof;
+    case NONEXISTENCE:
+        ExistenceProofBody existenceProof;
+    } body;
+};
+
+// Resource limits for a Soroban transaction.
+// The transaction will fail if it exceeds any of these limits.
+struct SorobanResources
+{   
+    // The ledger footprint of the transaction.
+    LedgerFootprint footprint;
+    // The maximum number of instructions this transaction can use
+    uint32 instructions; 
+
+    // The maximum number of bytes this transaction can read from ledger
+    uint32 readBytes;
+    // The maximum number of bytes this transaction can write to ledger
+    uint32 writeBytes;
+};
+
+// The transaction extension for Soroban.
+struct SorobanTransactionData
+{
+    ExtensionPoint ext;
+    SorobanResources resources;
+    // Amount of the transaction `fee` allocated to the Soroban resource fees.
+    // The fraction of `resourceFee` corresponding to `resources` specified 
+    // above is *not* refundable (i.e. fees for instructions, ledger I/O), as
+    // well as fees for the transaction size.
+    // The remaining part of the fee is refundable and the charged value is
+    // based on the actual consumption of refundable resources (events, ledger
+    // rent bumps).
+    // The `inclusionFee` used for prioritization of the transaction is defined
+    // as `tx.fee - resourceFee`.
+    int64 resourceFee;
+};
 
 // TransactionV0 is a transaction with the AccountID discriminant stripped off,
 // leaving a raw ed25519 public key to identify the source account. This is used
@@ -695,6 +965,8 @@ struct Transaction
     {
     case 0:
         void;
+    case 1:
+        SorobanTransactionData sorobanData;
     }
     ext;
 };
@@ -1588,6 +1860,73 @@ case LIQUIDITY_POOL_WITHDRAW_UNDER_MINIMUM:
     void;
 };
 
+enum InvokeHostFunctionResultCode
+{
+    // codes considered as "success" for the operation
+    INVOKE_HOST_FUNCTION_SUCCESS = 0,
+
+    // codes considered as "failure" for the operation
+    INVOKE_HOST_FUNCTION_MALFORMED = -1,
+    INVOKE_HOST_FUNCTION_TRAPPED = -2,
+    INVOKE_HOST_FUNCTION_RESOURCE_LIMIT_EXCEEDED = -3,
+    INVOKE_HOST_FUNCTION_ENTRY_ARCHIVED = -4,
+    INVOKE_HOST_FUNCTION_INSUFFICIENT_REFUNDABLE_FEE = -5
+};
+
+union InvokeHostFunctionResult switch (InvokeHostFunctionResultCode code)
+{
+case INVOKE_HOST_FUNCTION_SUCCESS:
+    Hash success; // sha256(InvokeHostFunctionSuccessPreImage)
+case INVOKE_HOST_FUNCTION_MALFORMED:
+case INVOKE_HOST_FUNCTION_TRAPPED:
+case INVOKE_HOST_FUNCTION_RESOURCE_LIMIT_EXCEEDED:
+case INVOKE_HOST_FUNCTION_ENTRY_ARCHIVED:
+case INVOKE_HOST_FUNCTION_INSUFFICIENT_REFUNDABLE_FEE:
+    void;
+};
+
+enum ExtendFootprintTTLResultCode
+{
+    // codes considered as "success" for the operation
+    EXTEND_FOOTPRINT_TTL_SUCCESS = 0,
+
+    // codes considered as "failure" for the operation
+    EXTEND_FOOTPRINT_TTL_MALFORMED = -1,
+    EXTEND_FOOTPRINT_TTL_RESOURCE_LIMIT_EXCEEDED = -2,
+    EXTEND_FOOTPRINT_TTL_INSUFFICIENT_REFUNDABLE_FEE = -3
+};
+
+union ExtendFootprintTTLResult switch (ExtendFootprintTTLResultCode code)
+{
+case EXTEND_FOOTPRINT_TTL_SUCCESS:
+    void;
+case EXTEND_FOOTPRINT_TTL_MALFORMED:
+case EXTEND_FOOTPRINT_TTL_RESOURCE_LIMIT_EXCEEDED:
+case EXTEND_FOOTPRINT_TTL_INSUFFICIENT_REFUNDABLE_FEE:
+    void;
+};
+
+enum RestoreFootprintResultCode
+{
+    // codes considered as "success" for the operation
+    RESTORE_FOOTPRINT_SUCCESS = 0,
+
+    // codes considered as "failure" for the operation
+    RESTORE_FOOTPRINT_MALFORMED = -1,
+    RESTORE_FOOTPRINT_RESOURCE_LIMIT_EXCEEDED = -2,
+    RESTORE_FOOTPRINT_INSUFFICIENT_REFUNDABLE_FEE = -3
+};
+
+union RestoreFootprintResult switch (RestoreFootprintResultCode code)
+{
+case RESTORE_FOOTPRINT_SUCCESS:
+    void;
+case RESTORE_FOOTPRINT_MALFORMED:
+case RESTORE_FOOTPRINT_RESOURCE_LIMIT_EXCEEDED:
+case RESTORE_FOOTPRINT_INSUFFICIENT_REFUNDABLE_FEE:
+    void;
+};
+
 /* High level Operation Result */
 enum OperationResultCode
 {
@@ -1654,6 +1993,12 @@ case opINNER:
         LiquidityPoolDepositResult liquidityPoolDepositResult;
     case LIQUIDITY_POOL_WITHDRAW:
         LiquidityPoolWithdrawResult liquidityPoolWithdrawResult;
+    case INVOKE_HOST_FUNCTION:
+        InvokeHostFunctionResult invokeHostFunctionResult;
+    case EXTEND_FOOTPRINT_TTL:
+        ExtendFootprintTTLResult extendFootprintTTLResult;
+    case RESTORE_FOOTPRINT:
+        RestoreFootprintResult restoreFootprintResult;
     }
     tr;
 case opBAD_AUTH:
@@ -1684,12 +2029,12 @@ enum TransactionResultCode
     txBAD_AUTH_EXTRA = -10,      // unused signatures attached to transaction
     txINTERNAL_ERROR = -11,      // an unknown error occurred
 
-    txNOT_SUPPORTED = -12,         // transaction type not supported
-    txFEE_BUMP_INNER_FAILED = -13, // fee bump inner transaction failed
-    txBAD_SPONSORSHIP = -14,       // sponsorship not confirmed
-    txBAD_MIN_SEQ_AGE_OR_GAP =
-        -15, // minSeqAge or minSeqLedgerGap conditions not met
-    txMALFORMED = -16 // precondition is invalid
+    txNOT_SUPPORTED = -12,          // transaction type not supported
+    txFEE_BUMP_INNER_FAILED = -13,  // fee bump inner transaction failed
+    txBAD_SPONSORSHIP = -14,        // sponsorship not confirmed
+    txBAD_MIN_SEQ_AGE_OR_GAP = -15, // minSeqAge or minSeqLedgerGap conditions not met
+    txMALFORMED = -16,              // precondition is invalid
+    txSOROBAN_INVALID = -17         // soroban-specific preconditions were not met
 };
 
 // InnerTransactionResult must be binary compatible with TransactionResult
@@ -1720,6 +2065,7 @@ struct InnerTransactionResult
     case txBAD_SPONSORSHIP:
     case txBAD_MIN_SEQ_AGE_OR_GAP:
     case txMALFORMED:
+    case txSOROBAN_INVALID:
         void;
     }
     result;
@@ -1766,6 +2112,7 @@ struct TransactionResult
     case txBAD_SPONSORSHIP:
     case txBAD_MIN_SEQ_AGE_OR_GAP:
     case txMALFORMED:
+    case txSOROBAN_INVALID:
         void;
     }
     result;

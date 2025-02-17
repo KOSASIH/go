@@ -8,8 +8,8 @@ fi
 rm -rf "$PGDATA"/* 
 sudo chown -R postgres "$PGDATA"
 sudo chmod -R 775 "$PGDATA"
-sudo -u postgres --preserve-env=PGDATA /usr/lib/postgresql/12/bin/initdb
-sudo -u postgres --preserve-env=PGDATA /usr/lib/postgresql/12/bin/pg_ctl start
+sudo -u postgres --preserve-env=PGDATA /usr/lib/postgresql/14/bin/initdb
+sudo -u postgres --preserve-env=PGDATA /usr/lib/postgresql/14/bin/pg_ctl start
 sudo -u postgres createdb horizon
 sudo -u postgres psql -c "ALTER USER postgres PASSWORD 'postgres';"
 
@@ -50,9 +50,12 @@ dump_horizon_db() {
 	echo "dumping history_ledgers"
 	psql "postgres://postgres:postgres@localhost:5432/horizon?sslmode=disable" -t -A -F"," --variable="FETCH_COUNT=100" -c "select sequence, ledger_hash, previous_ledger_hash, transaction_count, operation_count, closed_at, id, total_coins, fee_pool, base_fee, base_reserve, max_tx_set_size, protocol_version, ledger_header, successful_transaction_count, failed_transaction_count from history_ledgers order by sequence asc" > "${1}_ledgers"
 	echo "dumping history_operations"
-	psql "postgres://postgres:postgres@localhost:5432/horizon?sslmode=disable" -t -A -F"," --variable="FETCH_COUNT=100" -c "select * from history_operations order by id asc" > "${1}_operations"
+	# skip is_payment column which was only introduced in the most recent horizon v2.27.0
+	psql "postgres://postgres:postgres@localhost:5432/horizon?sslmode=disable" -t -A -F"," --variable="FETCH_COUNT=100" -c "select id, transaction_id, application_order, type, details, source_account, source_account_muxed from history_operations order by id asc" > "${1}_operations"
 	echo "dumping history_operation_claimable_balances"
-	psql "postgres://postgres:postgres@localhost:5432/horizon?sslmode=disable" -t -A -F"," --variable="FETCH_COUNT=100" -c "select history_operation_id, history_claimable_balance_id from history_operation_claimable_balances left join history_claimable_balances on history_claimable_balances.id = history_operation_claimable_balances.history_claimable_balance_id order by history_operation_id asc, id asc" > "${1}_operation_claimable_balances"
+	psql "postgres://postgres:postgres@localhost:5432/horizon?sslmode=disable" -t -A -F"," --variable="FETCH_COUNT=100" -c "select history_operation_id, claimable_balance_id from history_operation_claimable_balances left join history_claimable_balances on history_claimable_balances.id = history_operation_claimable_balances.history_claimable_balance_id order by history_operation_id asc, claimable_balance_id asc" > "${1}_operation_claimable_balances"
+  echo "dumping history_operation_liquidity_pools"
+  psql "postgres://postgres:postgres@localhost:5432/horizon?sslmode=disable" -t -A -F"," --variable="FETCH_COUNT=100" -c "select history_operation_id, liquidity_pool_id from history_operation_liquidity_pools left join history_liquidity_pools on history_liquidity_pools.id = history_operation_liquidity_pools.history_liquidity_pool_id order by history_operation_id asc, liquidity_pool_id asc" > "${1}_operation_liquidity_pools"
 	echo "dumping history_operation_participants"
 	psql "postgres://postgres:postgres@localhost:5432/horizon?sslmode=disable" -t -A -F"," --variable="FETCH_COUNT=100" -c "select history_operation_id, address from history_operation_participants left join history_accounts on history_accounts.id = history_operation_participants.history_account_id order by history_operation_id asc, address asc" > "${1}_operation_participants"
 	echo "dumping history_trades"
@@ -62,7 +65,9 @@ dump_horizon_db() {
 	# in different Stellar-Core instances. The final fix should probably: unmarshal `tx_meta`, sort it, marshal and compare.
 	psql "postgres://postgres:postgres@localhost:5432/horizon?sslmode=disable" -t -A -F"," --variable="FETCH_COUNT=100" -c "select transaction_hash, ledger_sequence, application_order, account, account_sequence, max_fee, operation_count, id, tx_envelope, tx_result, tx_fee_meta, signatures, memo_type, memo, time_bounds, successful, fee_charged, inner_transaction_hash, fee_account, inner_signatures, new_max_fee, account_muxed, fee_account_muxed from history_transactions order by id asc" > "${1}_transactions"
 	echo "dumping history_transaction_claimable_balances"
-	psql "postgres://postgres:postgres@localhost:5432/horizon?sslmode=disable" -t -A -F"," --variable="FETCH_COUNT=100" -c "select history_transaction_id, history_claimable_balance_id from history_transaction_claimable_balances left join history_claimable_balances on history_claimable_balances.id = history_transaction_claimable_balances.history_claimable_balance_id order by history_transaction_id, id" > "${1}_transaction_claimable_balances"
+	psql "postgres://postgres:postgres@localhost:5432/horizon?sslmode=disable" -t -A -F"," --variable="FETCH_COUNT=100" -c "select history_transaction_id, claimable_balance_id from history_transaction_claimable_balances left join history_claimable_balances on history_claimable_balances.id = history_transaction_claimable_balances.history_claimable_balance_id order by history_transaction_id, claimable_balance_id" > "${1}_transaction_claimable_balances"
+  echo "dumping history_transaction_liquidity_pools"
+  psql "postgres://postgres:postgres@localhost:5432/horizon?sslmode=disable" -t -A -F"," --variable="FETCH_COUNT=100" -c "select history_transaction_id, liquidity_pool_id from history_transaction_liquidity_pools left join history_liquidity_pools on history_liquidity_pools.id = history_transaction_liquidity_pools.history_liquidity_pool_id order by history_transaction_id, liquidity_pool_id" > "${1}_transaction_liquidity_pools"
 	echo "dumping history_transaction_participants"
 	psql "postgres://postgres:postgres@localhost:5432/horizon?sslmode=disable" -t -A -F"," --variable="FETCH_COUNT=100" -c "select history_transaction_id, address from history_transaction_participants left join history_accounts on history_accounts.id = history_transaction_participants.history_account_id order by history_transaction_id, address" > "${1}_transaction_participants"
 }
@@ -71,9 +76,8 @@ dump_horizon_db() {
 export NETWORK_PASSPHRASE="Public Global Stellar Network ; September 2015"
 export HISTORY_ARCHIVE_URLS="https://s3-eu-west-1.amazonaws.com/history.stellar.org/prd/core-live/core_live_001"
 export DATABASE_URL="postgres://postgres:postgres@localhost:5432/horizon?sslmode=disable"
-export CAPTIVE_CORE_CONFIG_APPEND_PATH="/captive-core-pubnet.cfg" 
+export CAPTIVE_CORE_CONFIG_APPEND_PATH="/captive-core-pubnet.cfg"
 export STELLAR_CORE_BINARY_PATH="/usr/bin/stellar-core"
-export ENABLE_CAPTIVE_CORE_INGESTION="true"
 
 cd stellar-go
 git pull origin
@@ -93,12 +97,15 @@ function alter_tables_unlogged() {
 	psql "postgres://postgres:postgres@localhost:5432/horizon?sslmode=disable" -c "ALTER TABLE history_accounts SET UNLOGGED;"
 	psql "postgres://postgres:postgres@localhost:5432/horizon?sslmode=disable" -c "ALTER TABLE history_assets SET UNLOGGED;"
 	psql "postgres://postgres:postgres@localhost:5432/horizon?sslmode=disable" -c "ALTER TABLE history_claimable_balances SET UNLOGGED;"
+  psql "postgres://postgres:postgres@localhost:5432/horizon?sslmode=disable" -c "ALTER TABLE history_liquidity_pools SET UNLOGGED;"
 	psql "postgres://postgres:postgres@localhost:5432/horizon?sslmode=disable" -c "ALTER TABLE history_effects SET UNLOGGED;"
 	psql "postgres://postgres:postgres@localhost:5432/horizon?sslmode=disable" -c "ALTER TABLE history_ledgers SET UNLOGGED;"
 	psql "postgres://postgres:postgres@localhost:5432/horizon?sslmode=disable" -c "ALTER TABLE history_operation_claimable_balances SET UNLOGGED;"
+  psql "postgres://postgres:postgres@localhost:5432/horizon?sslmode=disable" -c "ALTER TABLE history_operation_liquidity_pools SET UNLOGGED;"
 	psql "postgres://postgres:postgres@localhost:5432/horizon?sslmode=disable" -c "ALTER TABLE history_operation_participants SET UNLOGGED;"
 	psql "postgres://postgres:postgres@localhost:5432/horizon?sslmode=disable" -c "ALTER TABLE history_operations SET UNLOGGED;"
 	psql "postgres://postgres:postgres@localhost:5432/horizon?sslmode=disable" -c "ALTER TABLE history_transaction_claimable_balances SET UNLOGGED;"
+  psql "postgres://postgres:postgres@localhost:5432/horizon?sslmode=disable" -c "ALTER TABLE history_transaction_liquidity_pools SET UNLOGGED;"
 	psql "postgres://postgres:postgres@localhost:5432/horizon?sslmode=disable" -c "ALTER TABLE history_transaction_participants SET UNLOGGED;"
 	psql "postgres://postgres:postgres@localhost:5432/horizon?sslmode=disable" -c "ALTER TABLE history_transactions SET UNLOGGED;"
 	psql "postgres://postgres:postgres@localhost:5432/horizon?sslmode=disable" -c "ALTER TABLE offers SET UNLOGGED;"

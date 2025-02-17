@@ -10,157 +10,73 @@ import (
 	"strconv"
 
 	"github.com/guregu/null"
+
 	"github.com/stellar/go/amount"
 	"github.com/stellar/go/ingest"
 	"github.com/stellar/go/keypair"
 	"github.com/stellar/go/protocols/horizon/base"
 	"github.com/stellar/go/services/horizon/internal/db2/history"
+	"github.com/stellar/go/strkey"
+	"github.com/stellar/go/support/contractevents"
+	"github.com/stellar/go/support/db"
 	"github.com/stellar/go/support/errors"
 	"github.com/stellar/go/xdr"
 )
 
 // EffectProcessor process effects
 type EffectProcessor struct {
-	effects  []effect
-	effectsQ history.QEffects
-	sequence uint32
+	accountLoader *history.AccountLoader
+	batch         history.EffectBatchInsertBuilder
+	network       string
 }
 
-func NewEffectProcessor(effectsQ history.QEffects, sequence uint32) *EffectProcessor {
+func NewEffectProcessor(
+	accountLoader *history.AccountLoader,
+	batch history.EffectBatchInsertBuilder,
+	network string,
+) *EffectProcessor {
 	return &EffectProcessor{
-		effectsQ: effectsQ,
-		sequence: sequence,
+		accountLoader: accountLoader,
+		batch:         batch,
+		network:       network,
 	}
 }
 
-func (p *EffectProcessor) loadAccountIDs(ctx context.Context, accountSet map[string]int64) error {
-	addresses := make([]string, 0, len(accountSet))
-	for address := range accountSet {
-		addresses = append(addresses, address)
-	}
-
-	addressToID, err := p.effectsQ.CreateAccounts(ctx, addresses, maxBatchSize)
-	if err != nil {
-		return errors.Wrap(err, "Could not create account ids")
-	}
-
-	for _, address := range addresses {
-		id, ok := addressToID[address]
-		if !ok {
-			return errors.Errorf("no id found for account address %s", address)
-		}
-
-		accountSet[address] = id
-	}
-
-	return nil
+func (p *EffectProcessor) Name() string {
+	return "processors.EffectProcessor"
 }
 
-func operationsEffects(transaction ingest.LedgerTransaction, sequence uint32) ([]effect, error) {
-	effects := []effect{}
+func (p *EffectProcessor) ProcessTransaction(
+	lcm xdr.LedgerCloseMeta, transaction ingest.LedgerTransaction,
+) error {
+	// Failed transactions don't have operation effects
+	if !transaction.Result.Successful() {
+		return nil
+	}
 
 	for opi, op := range transaction.Envelope.Operations() {
 		operation := transactionOperationWrapper{
 			index:          uint32(opi),
 			transaction:    transaction,
 			operation:      op,
-			ledgerSequence: sequence,
+			ledgerSequence: uint32(lcm.LedgerSequence()),
+			network:        p.network,
 		}
-
-		p, err := operation.effects()
-		if err != nil {
-			return effects, errors.Wrapf(err, "reading operation %v effects", operation.ID())
+		if err := operation.ingestEffects(p.accountLoader, p.batch); err != nil {
+			return errors.Wrapf(err, "reading operation %v effects", operation.ID())
 		}
-		effects = append(effects, p...)
-	}
-
-	return effects, nil
-}
-
-func (p *EffectProcessor) insertDBOperationsEffects(ctx context.Context, effects []effect, accountSet map[string]int64) error {
-	batch := p.effectsQ.NewEffectBatchInsertBuilder(maxBatchSize)
-
-	for _, effect := range effects {
-		accountID, found := accountSet[effect.address]
-
-		if !found {
-			return errors.Errorf("Error finding history_account_id for address %v", effect.address)
-		}
-
-		var detailsJSON []byte
-		detailsJSON, err := json.Marshal(effect.details)
-
-		if err != nil {
-			return errors.Wrapf(err, "Error marshaling details for operation effect %v", effect.operationID)
-		}
-
-		if err := batch.Add(ctx,
-			accountID,
-			effect.addressMuxed,
-			effect.operationID,
-			effect.order,
-			effect.effectType,
-			detailsJSON,
-		); err != nil {
-			return errors.Wrap(err, "could not insert operation effect in db")
-		}
-	}
-
-	if err := batch.Exec(ctx); err != nil {
-		return errors.Wrap(err, "could not flush operation effects to db")
 	}
 	return nil
 }
 
-func (p *EffectProcessor) ProcessTransaction(ctx context.Context, transaction ingest.LedgerTransaction) (err error) {
-	// Failed transactions don't have operation effects
-	if !transaction.Result.Successful() {
-		return nil
-	}
-
-	var effectsForTx []effect
-	effectsForTx, err = operationsEffects(transaction, p.sequence)
-	if err != nil {
-		return err
-	}
-	p.effects = append(p.effects, effectsForTx...)
-
-	return nil
+func (p *EffectProcessor) Flush(ctx context.Context, session db.SessionInterface) (err error) {
+	return p.batch.Exec(ctx, session)
 }
 
-func (p *EffectProcessor) Commit(ctx context.Context) (err error) {
-	if len(p.effects) > 0 {
-		accountSet := map[string]int64{}
-
-		for _, effect := range p.effects {
-			accountSet[effect.address] = 0
-		}
-
-		if err = p.loadAccountIDs(ctx, accountSet); err != nil {
-			return err
-		}
-
-		if err = p.insertDBOperationsEffects(ctx, p.effects, accountSet); err != nil {
-			return err
-		}
-	}
-
-	return err
-}
-
-type effect struct {
-	address      string
-	addressMuxed null.String
-	operationID  int64
-	details      map[string]interface{}
-	effectType   history.EffectType
-	order        uint32
-}
-
-// Effects returns the operation effects
-func (operation *transactionOperationWrapper) effects() ([]effect, error) {
+// ingestEffects adds effects from the operation to the given EffectBatchInsertBuilder
+func (operation *transactionOperationWrapper) ingestEffects(accountLoader *history.AccountLoader, batch history.EffectBatchInsertBuilder) error {
 	if !operation.transaction.Result.Successful() {
-		return []effect{}, nil
+		return nil
 	}
 	var (
 		op  = operation.operation
@@ -169,19 +85,21 @@ func (operation *transactionOperationWrapper) effects() ([]effect, error) {
 
 	changes, err := operation.transaction.GetOperationChanges(operation.index)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	wrapper := &effectsWrapper{
-		effects:   []effect{},
-		operation: operation,
+		accountLoader: accountLoader,
+		batch:         batch,
+		order:         1,
+		operation:     operation,
 	}
 
 	switch operation.OperationType() {
 	case xdr.OperationTypeCreateAccount:
-		wrapper.addAccountCreatedEffects()
+		err = wrapper.addAccountCreatedEffects()
 	case xdr.OperationTypePayment:
-		wrapper.addPaymentEffects()
+		err = wrapper.addPaymentEffects()
 	case xdr.OperationTypePathPaymentStrictReceive:
 		err = wrapper.pathPaymentStrictReceiveEffects()
 	case xdr.OperationTypePathPaymentStrictSend:
@@ -193,15 +111,15 @@ func (operation *transactionOperationWrapper) effects() ([]effect, error) {
 	case xdr.OperationTypeCreatePassiveSellOffer:
 		err = wrapper.addCreatePassiveSellOfferEffect()
 	case xdr.OperationTypeSetOptions:
-		wrapper.addSetOptionsEffects()
+		err = wrapper.addSetOptionsEffects()
 	case xdr.OperationTypeChangeTrust:
 		err = wrapper.addChangeTrustEffects()
 	case xdr.OperationTypeAllowTrust:
 		err = wrapper.addAllowTrustEffects()
 	case xdr.OperationTypeAccountMerge:
-		wrapper.addAccountMergeEffects()
+		err = wrapper.addAccountMergeEffects()
 	case xdr.OperationTypeInflation:
-		wrapper.addInflationEffects()
+		err = wrapper.addInflationEffects()
 	case xdr.OperationTypeManageData:
 		err = wrapper.addManageDataEffects()
 	case xdr.OperationTypeBumpSequence:
@@ -210,8 +128,11 @@ func (operation *transactionOperationWrapper) effects() ([]effect, error) {
 		err = wrapper.addCreateClaimableBalanceEffects(changes)
 	case xdr.OperationTypeClaimClaimableBalance:
 		err = wrapper.addClaimClaimableBalanceEffects(changes)
-	case xdr.OperationTypeBeginSponsoringFutureReserves, xdr.OperationTypeEndSponsoringFutureReserves, xdr.OperationTypeRevokeSponsorship:
-	// The effects of these operations are obtained  indirectly from the ledger entries
+	case xdr.OperationTypeBeginSponsoringFutureReserves,
+		xdr.OperationTypeEndSponsoringFutureReserves,
+		xdr.OperationTypeRevokeSponsorship:
+		// The effects of these operations are obtained indirectly from the
+		// ledger entries
 	case xdr.OperationTypeClawback:
 		err = wrapper.addClawbackEffects()
 	case xdr.OperationTypeClawbackClaimableBalance:
@@ -222,11 +143,25 @@ func (operation *transactionOperationWrapper) effects() ([]effect, error) {
 		err = wrapper.addLiquidityPoolDepositEffect()
 	case xdr.OperationTypeLiquidityPoolWithdraw:
 		err = wrapper.addLiquidityPoolWithdrawEffect()
+	case xdr.OperationTypeInvokeHostFunction:
+		// If there's an invokeHostFunction operation, there's definitely V3
+		// meta in the transaction, which means this error is real.
+		diagnosticEvents, innerErr := operation.transaction.GetDiagnosticEvents()
+		if innerErr != nil {
+			return innerErr
+		}
+
+		// For now, the only effects are related to the events themselves.
+		// Possible add'l work: https://github.com/stellar/go/issues/4585
+		err = wrapper.addInvokeHostFunctionEffects(filterEvents(diagnosticEvents))
+	case xdr.OperationTypeExtendFootprintTtl, xdr.OperationTypeRestoreFootprint:
+		// do not produce effects for these operations as horizon only provides
+		// limited visibility into soroban operations
 	default:
-		return nil, fmt.Errorf("Unknown operation type: %s", op.Body.Type)
+		err = fmt.Errorf("Unknown operation type: %s", op.Body.Type)
 	}
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	// Effects generated for multiple operations. Keep the effect categories
@@ -235,48 +170,75 @@ func (operation *transactionOperationWrapper) effects() ([]effect, error) {
 
 	// Sponsorships
 	for _, change := range changes {
-		if err = wrapper.addLedgerEntrySponsorshipEffects(change); err != nil {
-			return nil, err
+		if err := wrapper.addLedgerEntrySponsorshipEffects(change); err != nil {
+			return err
 		}
-		wrapper.addSignerSponsorshipEffects(change)
+		if err := wrapper.addSignerSponsorshipEffects(change); err != nil {
+			return err
+		}
 	}
 
 	// Liquidity pools
 	for _, change := range changes {
+
 		// Effects caused by ChangeTrust (creation), AllowTrust and SetTrustlineFlags (removal through revocation)
-		wrapper.addLedgerEntryLiquidityPoolEffects(change)
+		if err := wrapper.addLedgerEntryLiquidityPoolEffects(change); err != nil {
+			return err
+		}
 	}
 
-	return wrapper.effects, nil
+	return nil
+}
+
+func filterEvents(diagnosticEvents []xdr.DiagnosticEvent) []xdr.ContractEvent {
+	var filtered []xdr.ContractEvent
+	for _, diagnosticEvent := range diagnosticEvents {
+		if !diagnosticEvent.InSuccessfulContractCall || diagnosticEvent.Event.Type != xdr.ContractEventTypeContract {
+			continue
+		}
+		filtered = append(filtered, diagnosticEvent.Event)
+	}
+	return filtered
 }
 
 type effectsWrapper struct {
-	effects   []effect
-	operation *transactionOperationWrapper
+	accountLoader *history.AccountLoader
+	batch         history.EffectBatchInsertBuilder
+	order         uint32
+	operation     *transactionOperationWrapper
 }
 
-func (e *effectsWrapper) add(address string, addressMuxed null.String, effectType history.EffectType, details map[string]interface{}) {
-	e.effects = append(e.effects, effect{
-		address:      address,
-		addressMuxed: addressMuxed,
-		operationID:  e.operation.ID(),
-		effectType:   effectType,
-		order:        uint32(len(e.effects) + 1),
-		details:      details,
-	})
+func (e *effectsWrapper) add(address string, addressMuxed null.String, effectType history.EffectType, details map[string]interface{}) error {
+	detailsJSON, err := json.Marshal(details)
+	if err != nil {
+		return errors.Wrapf(err, "Error marshaling details for operation effect %v", e.operation.ID())
+	}
+
+	if err := e.batch.Add(
+		e.accountLoader.GetFuture(address),
+		addressMuxed,
+		e.operation.ID(),
+		e.order,
+		effectType,
+		detailsJSON,
+	); err != nil {
+		return errors.Wrap(err, "could not insert operation effect in db")
+	}
+	e.order++
+	return nil
 }
 
-func (e *effectsWrapper) addUnmuxed(address *xdr.AccountId, effectType history.EffectType, details map[string]interface{}) {
-	e.add(address.Address(), null.String{}, effectType, details)
+func (e *effectsWrapper) addUnmuxed(address *xdr.AccountId, effectType history.EffectType, details map[string]interface{}) error {
+	return e.add(address.Address(), null.String{}, effectType, details)
 }
 
-func (e *effectsWrapper) addMuxed(address *xdr.MuxedAccount, effectType history.EffectType, details map[string]interface{}) {
+func (e *effectsWrapper) addMuxed(address *xdr.MuxedAccount, effectType history.EffectType, details map[string]interface{}) error {
 	var addressMuxed null.String
 	if address.Type == xdr.CryptoKeyTypeKeyTypeMuxedEd25519 {
 		addressMuxed = null.StringFrom(address.Address())
 	}
 	accID := address.ToAccountId()
-	e.add(accID.Address(), addressMuxed, effectType, details)
+	return e.add(accID.Address(), addressMuxed, effectType, details)
 }
 
 var sponsoringEffectsTable = map[xdr.LedgerEntryType]struct {
@@ -307,9 +269,9 @@ var sponsoringEffectsTable = map[xdr.LedgerEntryType]struct {
 	// entries because we don't generate creation effects for them.
 }
 
-func (e *effectsWrapper) addSignerSponsorshipEffects(change ingest.Change) {
+func (e *effectsWrapper) addSignerSponsorshipEffects(change ingest.Change) error {
 	if change.Type != xdr.LedgerEntryTypeAccount {
-		return
+		return nil
 	}
 
 	preSigners := map[string]xdr.AccountId{}
@@ -347,12 +309,16 @@ func (e *effectsWrapper) addSignerSponsorshipEffects(change ingest.Change) {
 			details["sponsor"] = post.Address()
 			details["signer"] = signer
 			srcAccount := change.Post.Data.MustAccount().AccountId
-			e.addUnmuxed(&srcAccount, history.EffectSignerSponsorshipCreated, details)
+			if err := e.addUnmuxed(&srcAccount, history.EffectSignerSponsorshipCreated, details); err != nil {
+				return err
+			}
 		case !foundPost && foundPre:
 			details["former_sponsor"] = pre.Address()
 			details["signer"] = signer
 			srcAccount := change.Pre.Data.MustAccount().AccountId
-			e.addUnmuxed(&srcAccount, history.EffectSignerSponsorshipRemoved, details)
+			if err := e.addUnmuxed(&srcAccount, history.EffectSignerSponsorshipRemoved, details); err != nil {
+				return err
+			}
 		case foundPre && foundPost:
 			formerSponsor := pre.Address()
 			newSponsor := post.Address()
@@ -364,9 +330,12 @@ func (e *effectsWrapper) addSignerSponsorshipEffects(change ingest.Change) {
 			details["new_sponsor"] = newSponsor
 			details["signer"] = signer
 			srcAccount := change.Post.Data.MustAccount().AccountId
-			e.addUnmuxed(&srcAccount, history.EffectSignerSponsorshipUpdated, details)
+			if err := e.addUnmuxed(&srcAccount, history.EffectSignerSponsorshipUpdated, details); err != nil {
+				return err
+			}
 		}
 	}
+	return nil
 }
 
 func (e *effectsWrapper) addLedgerEntrySponsorshipEffects(change ingest.Change) error {
@@ -444,9 +413,13 @@ func (e *effectsWrapper) addLedgerEntrySponsorshipEffects(change ingest.Change) 
 	}
 
 	if accountID != nil {
-		e.addUnmuxed(accountID, effectType, details)
+		if err := e.addUnmuxed(accountID, effectType, details); err != nil {
+			return err
+		}
 	} else {
-		e.addMuxed(muxedAccount, effectType, details)
+		if err := e.addMuxed(muxedAccount, effectType, details); err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -474,55 +447,64 @@ func (e *effectsWrapper) addLedgerEntryLiquidityPoolEffects(change ingest.Change
 	default:
 		return nil
 	}
-	e.addMuxed(
+	return e.addMuxed(
 		e.operation.SourceAccount(),
 		effectType,
 		details,
 	)
-
-	return nil
 }
 
-func (e *effectsWrapper) addAccountCreatedEffects() {
+func (e *effectsWrapper) addAccountCreatedEffects() error {
 	op := e.operation.operation.Body.MustCreateAccountOp()
 
-	e.addUnmuxed(
+	if err := e.addUnmuxed(
 		&op.Destination,
 		history.EffectAccountCreated,
 		map[string]interface{}{
 			"starting_balance": amount.String(op.StartingBalance),
 		},
-	)
-	e.addMuxed(
+	); err != nil {
+		return err
+	}
+	if err := e.addMuxed(
 		e.operation.SourceAccount(),
 		history.EffectAccountDebited,
 		map[string]interface{}{
 			"asset_type": "native",
 			"amount":     amount.String(op.StartingBalance),
 		},
-	)
-	e.addUnmuxed(
+	); err != nil {
+		return err
+	}
+	if err := e.addUnmuxed(
 		&op.Destination,
 		history.EffectSignerCreated,
 		map[string]interface{}{
 			"public_key": op.Destination.Address(),
 			"weight":     keypair.DefaultSignerWeight,
 		},
-	)
+	); err != nil {
+		return err
+	}
+	return nil
 }
 
-func (e *effectsWrapper) addPaymentEffects() {
+func (e *effectsWrapper) addPaymentEffects() error {
 	op := e.operation.operation.Body.MustPaymentOp()
 
 	details := map[string]interface{}{"amount": amount.String(op.Amount)}
-	addAssetDetails(details, op.Asset, "")
+	if err := addAssetDetails(details, op.Asset, ""); err != nil {
+		return err
+	}
 
-	e.addMuxed(
+	if err := e.addMuxed(
 		&op.Destination,
 		history.EffectAccountCredited,
 		details,
-	)
-	e.addMuxed(
+	); err != nil {
+		return err
+	}
+	return e.addMuxed(
 		e.operation.SourceAccount(),
 		history.EffectAccountDebited,
 		details,
@@ -535,23 +517,31 @@ func (e *effectsWrapper) pathPaymentStrictReceiveEffects() error {
 	source := e.operation.SourceAccount()
 
 	details := map[string]interface{}{"amount": amount.String(op.DestAmount)}
-	addAssetDetails(details, op.DestAsset, "")
+	if err := addAssetDetails(details, op.DestAsset, ""); err != nil {
+		return err
+	}
 
-	e.addMuxed(
+	if err := e.addMuxed(
 		&op.Destination,
 		history.EffectAccountCredited,
 		details,
-	)
+	); err != nil {
+		return err
+	}
 
 	result := e.operation.OperationResult().MustPathPaymentStrictReceiveResult()
 	details = map[string]interface{}{"amount": amount.String(result.SendAmount())}
-	addAssetDetails(details, op.SendAsset, "")
+	if err := addAssetDetails(details, op.SendAsset, ""); err != nil {
+		return err
+	}
 
-	e.addMuxed(
+	if err := e.addMuxed(
 		source,
 		history.EffectAccountDebited,
 		details,
-	)
+	); err != nil {
+		return err
+	}
 
 	return e.addIngestTradeEffects(*source, resultSuccess.Offers)
 }
@@ -563,12 +553,20 @@ func (e *effectsWrapper) addPathPaymentStrictSendEffects() error {
 	result := e.operation.OperationResult().MustPathPaymentStrictSendResult()
 
 	details := map[string]interface{}{"amount": amount.String(result.DestAmount())}
-	addAssetDetails(details, op.DestAsset, "")
-	e.addMuxed(&op.Destination, history.EffectAccountCredited, details)
+	if err := addAssetDetails(details, op.DestAsset, ""); err != nil {
+		return err
+	}
+	if err := e.addMuxed(&op.Destination, history.EffectAccountCredited, details); err != nil {
+		return err
+	}
 
 	details = map[string]interface{}{"amount": amount.String(op.SendAmount)}
-	addAssetDetails(details, op.SendAsset, "")
-	e.addMuxed(source, history.EffectAccountDebited, details)
+	if err := addAssetDetails(details, op.SendAsset, ""); err != nil {
+		return err
+	}
+	if err := e.addMuxed(source, history.EffectAccountDebited, details); err != nil {
+		return err
+	}
 
 	return e.addIngestTradeEffects(*source, resultSuccess.Offers)
 }
@@ -607,11 +605,13 @@ func (e *effectsWrapper) addSetOptionsEffects() error {
 	op := e.operation.operation.Body.MustSetOptionsOp()
 
 	if op.HomeDomain != nil {
-		e.addMuxed(source, history.EffectAccountHomeDomainUpdated,
+		if err := e.addMuxed(source, history.EffectAccountHomeDomainUpdated,
 			map[string]interface{}{
 				"home_domain": string(*op.HomeDomain),
 			},
-		)
+		); err != nil {
+			return err
+		}
 	}
 
 	thresholdDetails := map[string]interface{}{}
@@ -629,7 +629,9 @@ func (e *effectsWrapper) addSetOptionsEffects() error {
 	}
 
 	if len(thresholdDetails) > 0 {
-		e.addMuxed(source, history.EffectAccountThresholdsUpdated, thresholdDetails)
+		if err := e.addMuxed(source, history.EffectAccountThresholdsUpdated, thresholdDetails); err != nil {
+			return err
+		}
 	}
 
 	flagDetails := map[string]interface{}{}
@@ -641,15 +643,19 @@ func (e *effectsWrapper) addSetOptionsEffects() error {
 	}
 
 	if len(flagDetails) > 0 {
-		e.addMuxed(source, history.EffectAccountFlagsUpdated, flagDetails)
+		if err := e.addMuxed(source, history.EffectAccountFlagsUpdated, flagDetails); err != nil {
+			return err
+		}
 	}
 
 	if op.InflationDest != nil {
-		e.addMuxed(source, history.EffectAccountInflationDestinationUpdated,
+		if err := e.addMuxed(source, history.EffectAccountInflationDestinationUpdated,
 			map[string]interface{}{
 				"inflation_destination": op.InflationDest.Address(),
 			},
-		)
+		); err != nil {
+			return err
+		}
 	}
 	changes, err := e.operation.transaction.GetOperationChanges(e.operation.index)
 	if err != nil {
@@ -672,7 +678,7 @@ func (e *effectsWrapper) addSetOptionsEffects() error {
 			continue
 		}
 
-		beforeSortedSigners := []string{}
+		var beforeSortedSigners []string
 		for signer := range before {
 			beforeSortedSigners = append(beforeSortedSigners, signer)
 		}
@@ -681,21 +687,25 @@ func (e *effectsWrapper) addSetOptionsEffects() error {
 		for _, addy := range beforeSortedSigners {
 			weight, ok := after[addy]
 			if !ok {
-				e.addMuxed(source, history.EffectSignerRemoved, map[string]interface{}{
+				if err := e.addMuxed(source, history.EffectSignerRemoved, map[string]interface{}{
 					"public_key": addy,
-				})
+				}); err != nil {
+					return err
+				}
 				continue
 			}
 
 			if weight != before[addy] {
-				e.addMuxed(source, history.EffectSignerUpdated, map[string]interface{}{
+				if err := e.addMuxed(source, history.EffectSignerUpdated, map[string]interface{}{
 					"public_key": addy,
 					"weight":     weight,
-				})
+				}); err != nil {
+					return err
+				}
 			}
 		}
 
-		afterSortedSigners := []string{}
+		var afterSortedSigners []string
 		for signer := range after {
 			afterSortedSigners = append(afterSortedSigners, signer)
 		}
@@ -710,10 +720,12 @@ func (e *effectsWrapper) addSetOptionsEffects() error {
 				continue
 			}
 
-			e.addMuxed(source, history.EffectSignerCreated, map[string]interface{}{
+			if err := e.addMuxed(source, history.EffectSignerCreated, map[string]interface{}{
 				"public_key": addy,
 				"weight":     weight,
-			})
+			}); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -769,10 +781,14 @@ func (e *effectsWrapper) addChangeTrustEffects() error {
 				return err
 			}
 		} else {
-			addAssetDetails(details, op.Line.ToAsset(), "")
+			if err := addAssetDetails(details, op.Line.ToAsset(), ""); err != nil {
+				return err
+			}
 		}
 
-		e.addMuxed(source, effect, details)
+		if err := e.addMuxed(source, effect, details); err != nil {
+			return err
+		}
 		break
 	}
 
@@ -786,33 +802,47 @@ func (e *effectsWrapper) addAllowTrustEffects() error {
 	details := map[string]interface{}{
 		"trustor": op.Trustor.Address(),
 	}
-	addAssetDetails(details, asset, "")
+	if err := addAssetDetails(details, asset, ""); err != nil {
+		return err
+	}
 
 	switch {
 	case xdr.TrustLineFlags(op.Authorize).IsAuthorized():
-		e.addMuxed(source, history.EffectTrustlineAuthorized, details)
+		if err := e.addMuxed(source, history.EffectTrustlineAuthorized, details); err != nil {
+			return err
+		}
 		// Forward compatibility
 		setFlags := xdr.Uint32(xdr.TrustLineFlagsAuthorizedFlag)
-		e.addTrustLineFlagsEffect(source, &op.Trustor, asset, &setFlags, nil)
+		if err := e.addTrustLineFlagsEffect(source, &op.Trustor, asset, &setFlags, nil); err != nil {
+			return err
+		}
 	case xdr.TrustLineFlags(op.Authorize).IsAuthorizedToMaintainLiabilitiesFlag():
-		e.addMuxed(
+		if err := e.addMuxed(
 			source,
 			history.EffectTrustlineAuthorizedToMaintainLiabilities,
 			details,
-		)
+		); err != nil {
+			return err
+		}
 		// Forward compatibility
 		setFlags := xdr.Uint32(xdr.TrustLineFlagsAuthorizedToMaintainLiabilitiesFlag)
-		e.addTrustLineFlagsEffect(source, &op.Trustor, asset, &setFlags, nil)
+		if err := e.addTrustLineFlagsEffect(source, &op.Trustor, asset, &setFlags, nil); err != nil {
+			return err
+		}
 	default:
-		e.addMuxed(source, history.EffectTrustlineDeauthorized, details)
+		if err := e.addMuxed(source, history.EffectTrustlineDeauthorized, details); err != nil {
+			return err
+		}
 		// Forward compatibility, show both as cleared
 		clearFlags := xdr.Uint32(xdr.TrustLineFlagsAuthorizedFlag | xdr.TrustLineFlagsAuthorizedToMaintainLiabilitiesFlag)
-		e.addTrustLineFlagsEffect(source, &op.Trustor, asset, nil, &clearFlags)
+		if err := e.addTrustLineFlagsEffect(source, &op.Trustor, asset, nil, &clearFlags); err != nil {
+			return err
+		}
 	}
 	return e.addLiquidityPoolRevokedEffect()
 }
 
-func (e *effectsWrapper) addAccountMergeEffects() {
+func (e *effectsWrapper) addAccountMergeEffects() error {
 	source := e.operation.SourceAccount()
 
 	dest := e.operation.operation.Body.MustDestination()
@@ -822,21 +852,31 @@ func (e *effectsWrapper) addAccountMergeEffects() {
 		"asset_type": "native",
 	}
 
-	e.addMuxed(source, history.EffectAccountDebited, details)
-	e.addMuxed(&dest, history.EffectAccountCredited, details)
-	e.addMuxed(source, history.EffectAccountRemoved, map[string]interface{}{})
+	if err := e.addMuxed(source, history.EffectAccountDebited, details); err != nil {
+		return err
+	}
+	if err := e.addMuxed(&dest, history.EffectAccountCredited, details); err != nil {
+		return err
+	}
+	if err := e.addMuxed(source, history.EffectAccountRemoved, map[string]interface{}{}); err != nil {
+		return err
+	}
+	return nil
 }
 
-func (e *effectsWrapper) addInflationEffects() {
+func (e *effectsWrapper) addInflationEffects() error {
 	payouts := e.operation.OperationResult().MustInflationResult().MustPayouts()
 	for _, payout := range payouts {
-		e.addUnmuxed(&payout.Destination, history.EffectAccountCredited,
+		if err := e.addUnmuxed(&payout.Destination, history.EffectAccountCredited,
 			map[string]interface{}{
 				"amount":     amount.String(payout.Amount),
 				"asset_type": "native",
 			},
-		)
+		); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 func (e *effectsWrapper) addManageDataEffects() error {
@@ -876,8 +916,7 @@ func (e *effectsWrapper) addManageDataEffects() error {
 		break
 	}
 
-	e.addMuxed(source, effect, details)
-	return nil
+	return e.addMuxed(source, effect, details)
 }
 
 func (e *effectsWrapper) addBumpSequenceEffects() error {
@@ -900,7 +939,9 @@ func (e *effectsWrapper) addBumpSequenceEffects() error {
 
 		if beforeAccount.SeqNum != afterAccount.SeqNum {
 			details := map[string]interface{}{"new_seq": afterAccount.SeqNum}
-			e.addMuxed(source, history.EffectSequenceBumped, details)
+			if err := e.addMuxed(source, history.EffectSequenceBumped, details); err != nil {
+				return err
+			}
 		}
 		break
 	}
@@ -923,7 +964,9 @@ func (e *effectsWrapper) addCreateClaimableBalanceEffects(changes []ingest.Chang
 			continue
 		}
 		cb = change.Post.Data.ClaimableBalance
-		e.addClaimableBalanceEntryCreatedEffects(source, cb)
+		if err := e.addClaimableBalanceEntryCreatedEffects(source, cb); err != nil {
+			return err
+		}
 		break
 	}
 	if cb == nil {
@@ -933,14 +976,14 @@ func (e *effectsWrapper) addCreateClaimableBalanceEffects(changes []ingest.Chang
 	details := map[string]interface{}{
 		"amount": amount.String(cb.Amount),
 	}
-	addAssetDetails(details, cb.Asset, "")
-	e.addMuxed(
+	if err := addAssetDetails(details, cb.Asset, ""); err != nil {
+		return err
+	}
+	return e.addMuxed(
 		source,
 		history.EffectAccountDebited,
 		details,
 	)
-
-	return nil
 }
 
 func (e *effectsWrapper) addClaimableBalanceEntryCreatedEffects(source *xdr.MuxedAccount, cb *xdr.ClaimableBalanceEntry) error {
@@ -954,11 +997,13 @@ func (e *effectsWrapper) addClaimableBalanceEntryCreatedEffects(source *xdr.Muxe
 		"asset":      cb.Asset.StringCanonical(),
 	}
 	setClaimableBalanceFlagDetails(details, cb.Flags())
-	e.addMuxed(
+	if err := e.addMuxed(
 		source,
 		history.EffectClaimableBalanceCreated,
 		details,
-	)
+	); err != nil {
+		return err
+	}
 	// EffectClaimableBalanceClaimantCreated can be generated by
 	// `create_claimable_balance` operation but also by `liquidity_pool_withdraw`
 	// operation causing a revocation.
@@ -974,7 +1019,7 @@ func (e *effectsWrapper) addClaimableBalanceEntryCreatedEffects(source *xdr.Muxe
 	}
 	for _, c := range claimants {
 		cv0 := c.MustV0()
-		e.addUnmuxed(
+		if err := e.addUnmuxed(
 			&cv0.Destination,
 			history.EffectClaimableBalanceClaimantCreated,
 			map[string]interface{}{
@@ -983,9 +1028,11 @@ func (e *effectsWrapper) addClaimableBalanceEntryCreatedEffects(source *xdr.Muxe
 				"predicate":  cv0.Predicate,
 				"asset":      cb.Asset.StringCanonical(),
 			},
-		)
+		); err != nil {
+			return err
+		}
 	}
-	return err
+	return nil
 }
 
 func (e *effectsWrapper) addClaimClaimableBalanceEffects(changes []ingest.Change) error {
@@ -1028,23 +1075,25 @@ func (e *effectsWrapper) addClaimClaimableBalanceEffects(changes []ingest.Change
 	}
 	setClaimableBalanceFlagDetails(details, cBalance.Flags())
 	source := e.operation.SourceAccount()
-	e.addMuxed(
+	if err := e.addMuxed(
 		source,
 		history.EffectClaimableBalanceClaimed,
 		details,
-	)
+	); err != nil {
+		return err
+	}
 
 	details = map[string]interface{}{
 		"amount": amount.String(cBalance.Amount),
 	}
-	addAssetDetails(details, cBalance.Asset, "")
-	e.addMuxed(
+	if err := addAssetDetails(details, cBalance.Asset, ""); err != nil {
+		return err
+	}
+	return e.addMuxed(
 		source,
 		history.EffectAccountCredited,
 		details,
 	)
-
-	return nil
 }
 
 func (e *effectsWrapper) addIngestTradeEffects(buyer xdr.MuxedAccount, claims []xdr.ClaimAtom) error {
@@ -1058,23 +1107,30 @@ func (e *effectsWrapper) addIngestTradeEffects(buyer xdr.MuxedAccount, claims []
 				return err
 			}
 		default:
-			e.addClaimTradeEffects(buyer, claim)
+			if err := e.addClaimTradeEffects(buyer, claim); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
 }
 
-func (e *effectsWrapper) addClaimTradeEffects(buyer xdr.MuxedAccount, claim xdr.ClaimAtom) {
+func (e *effectsWrapper) addClaimTradeEffects(buyer xdr.MuxedAccount, claim xdr.ClaimAtom) error {
 	seller := claim.SellerId()
-	bd, sd := tradeDetails(buyer, seller, claim)
+	bd, sd, err := tradeDetails(buyer, seller, claim)
+	if err != nil {
+		return err
+	}
 
-	e.addMuxed(
+	if err := e.addMuxed(
 		&buyer,
 		history.EffectTrade,
 		bd,
-	)
+	); err != nil {
+		return err
+	}
 
-	e.addUnmuxed(
+	return e.addUnmuxed(
 		&seller,
 		history.EffectTrade,
 		sd,
@@ -1097,8 +1153,7 @@ func (e *effectsWrapper) addClaimLiquidityPoolTradeEffect(claim xdr.ClaimAtom) e
 			"amount": amount.String(claim.LiquidityPool.AmountBought),
 		},
 	}
-	e.addMuxed(e.operation.SourceAccount(), history.EffectLiquidityPoolTrade, details)
-	return nil
+	return e.addMuxed(e.operation.SourceAccount(), history.EffectLiquidityPoolTrade, details)
 }
 
 func (e *effectsWrapper) addClawbackEffects() error {
@@ -1107,20 +1162,26 @@ func (e *effectsWrapper) addClawbackEffects() error {
 		"amount": amount.String(op.Amount),
 	}
 	source := e.operation.SourceAccount()
-	addAssetDetails(details, op.Asset, "")
+	if err := addAssetDetails(details, op.Asset, ""); err != nil {
+		return err
+	}
 
 	// The funds will be burned, but even with that, we generated an account credited effect
-	e.addMuxed(
+	if err := e.addMuxed(
 		source,
 		history.EffectAccountCredited,
 		details,
-	)
+	); err != nil {
+		return err
+	}
 
-	e.addMuxed(
+	if err := e.addMuxed(
 		&op.From,
 		history.EffectAccountDebited,
 		details,
-	)
+	); err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -1135,23 +1196,29 @@ func (e *effectsWrapper) addClawbackClaimableBalanceEffects(changes []ingest.Cha
 		"balance_id": balanceId,
 	}
 	source := e.operation.SourceAccount()
-	e.addMuxed(
+	if err := e.addMuxed(
 		source,
 		history.EffectClaimableBalanceClawedBack,
 		details,
-	)
+	); err != nil {
+		return err
+	}
 
 	// Generate the account credited effect (although the funds will be burned) for the asset issuer
 	for _, c := range changes {
 		if c.Type == xdr.LedgerEntryTypeClaimableBalance && c.Post == nil && c.Pre != nil {
 			cb := c.Pre.Data.ClaimableBalance
 			details = map[string]interface{}{"amount": amount.String(cb.Amount)}
-			addAssetDetails(details, cb.Asset, "")
-			e.addMuxed(
+			if err := addAssetDetails(details, cb.Asset, ""); err != nil {
+				return err
+			}
+			if err := e.addMuxed(
 				source,
 				history.EffectAccountCredited,
 				details,
-			)
+			); err != nil {
+				return err
+			}
 			break
 		}
 	}
@@ -1162,7 +1229,9 @@ func (e *effectsWrapper) addClawbackClaimableBalanceEffects(changes []ingest.Cha
 func (e *effectsWrapper) addSetTrustLineFlagsEffects() error {
 	source := e.operation.SourceAccount()
 	op := e.operation.operation.Body.MustSetTrustLineFlagsOp()
-	e.addTrustLineFlagsEffect(source, &op.Trustor, op.Asset, &op.SetFlags, &op.ClearFlags)
+	if err := e.addTrustLineFlagsEffect(source, &op.Trustor, op.Asset, &op.SetFlags, &op.ClearFlags); err != nil {
+		return err
+	}
 	return e.addLiquidityPoolRevokedEffect()
 }
 
@@ -1171,11 +1240,13 @@ func (e *effectsWrapper) addTrustLineFlagsEffect(
 	trustor *xdr.AccountId,
 	asset xdr.Asset,
 	setFlags *xdr.Uint32,
-	clearFlags *xdr.Uint32) {
+	clearFlags *xdr.Uint32) error {
 	details := map[string]interface{}{
 		"trustor": trustor.Address(),
 	}
-	addAssetDetails(details, asset, "")
+	if err := addAssetDetails(details, asset, ""); err != nil {
+		return err
+	}
 
 	var flagDetailsAdded bool
 	if setFlags != nil {
@@ -1188,8 +1259,11 @@ func (e *effectsWrapper) addTrustLineFlagsEffect(
 	}
 
 	if flagDetailsAdded {
-		e.addMuxed(account, history.EffectTrustlineFlagsUpdated, details)
+		if err := e.addMuxed(account, history.EffectTrustlineFlagsUpdated, details); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 func setTrustLineFlagDetails(flagDetails map[string]interface{}, flags xdr.TrustLineFlags, setValue bool) {
@@ -1203,12 +1277,6 @@ func setTrustLineFlagDetails(flagDetails map[string]interface{}, flags xdr.Trust
 		flagDetails["clawback_enabled_flag"] = setValue
 	}
 }
-
-type sortableClaimableBalanceEntries []*xdr.ClaimableBalanceEntry
-
-func (s sortableClaimableBalanceEntries) Len() int           { return len(s) }
-func (s sortableClaimableBalanceEntries) Less(i, j int) bool { return s[i].Asset.LessThan(s[j].Asset) }
-func (s sortableClaimableBalanceEntries) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }
 
 func (e *effectsWrapper) addLiquidityPoolRevokedEffect() error {
 	source := e.operation.SourceAccount()
@@ -1225,7 +1293,6 @@ func (e *effectsWrapper) addLiquidityPoolRevokedEffect() error {
 		return err
 	}
 	assetToCBID := map[string]string{}
-	var cbs sortableClaimableBalanceEntries
 	for _, change := range changes {
 		if change.Type == xdr.LedgerEntryTypeClaimableBalance && change.Pre == nil && change.Post != nil {
 			cb := change.Post.Data.ClaimableBalance
@@ -1234,20 +1301,14 @@ func (e *effectsWrapper) addLiquidityPoolRevokedEffect() error {
 				return err
 			}
 			assetToCBID[cb.Asset.StringCanonical()] = id
-			cbs = append(cbs, cb)
+			if err := e.addClaimableBalanceEntryCreatedEffects(source, cb); err != nil {
+				return err
+			}
 		}
 	}
 	if len(assetToCBID) == 0 {
 		// no claimable balances were created, and thus, no revocation happened
 		return nil
-	}
-	// Core's claimable balance metadata isn't ordered, so we order it ourselves
-	// so that effects are ordered consistently
-	sort.Sort(cbs)
-	for _, cb := range cbs {
-		if err := e.addClaimableBalanceEntryCreatedEffects(source, cb); err != nil {
-			return err
-		}
 	}
 
 	reservesRevoked := make([]map[string]string, 0, 2)
@@ -1275,8 +1336,8 @@ func (e *effectsWrapper) addLiquidityPoolRevokedEffect() error {
 		"reserves_revoked": reservesRevoked,
 		"shares_revoked":   amount.String(-delta.TotalPoolShares),
 	}
-	e.addMuxed(source, history.EffectLiquidityPoolRevoked, details)
-	return nil
+
+	return e.addMuxed(source, history.EffectLiquidityPoolRevoked, details)
 }
 
 func setAuthFlagDetails(flagDetails map[string]interface{}, flags xdr.AccountFlags, setValue bool) {
@@ -1294,15 +1355,19 @@ func setAuthFlagDetails(flagDetails map[string]interface{}, flags xdr.AccountFla
 	}
 }
 
-func tradeDetails(buyer xdr.MuxedAccount, seller xdr.AccountId, claim xdr.ClaimAtom) (bd map[string]interface{}, sd map[string]interface{}) {
+func tradeDetails(buyer xdr.MuxedAccount, seller xdr.AccountId, claim xdr.ClaimAtom) (bd map[string]interface{}, sd map[string]interface{}, err error) {
 	bd = map[string]interface{}{
 		"offer_id":      claim.OfferId(),
 		"seller":        seller.Address(),
 		"bought_amount": amount.String(claim.AmountSold()),
 		"sold_amount":   amount.String(claim.AmountBought()),
 	}
-	addAssetDetails(bd, claim.AssetSold(), "bought_")
-	addAssetDetails(bd, claim.AssetBought(), "sold_")
+	if err = addAssetDetails(bd, claim.AssetSold(), "bought_"); err != nil {
+		return
+	}
+	if err = addAssetDetails(bd, claim.AssetBought(), "sold_"); err != nil {
+		return
+	}
 
 	sd = map[string]interface{}{
 		"offer_id":      claim.OfferId(),
@@ -1310,9 +1375,12 @@ func tradeDetails(buyer xdr.MuxedAccount, seller xdr.AccountId, claim xdr.ClaimA
 		"sold_amount":   amount.String(claim.AmountSold()),
 	}
 	addAccountAndMuxedAccountDetails(sd, buyer, "seller")
-	addAssetDetails(sd, claim.AssetBought(), "bought_")
-	addAssetDetails(sd, claim.AssetSold(), "sold_")
-
+	if err = addAssetDetails(sd, claim.AssetBought(), "bought_"); err != nil {
+		return
+	}
+	if err = addAssetDetails(sd, claim.AssetSold(), "sold_"); err != nil {
+		return
+	}
 	return
 }
 
@@ -1356,8 +1424,8 @@ func (e *effectsWrapper) addLiquidityPoolDepositEffect() error {
 		},
 		"shares_received": amount.String(delta.TotalPoolShares),
 	}
-	e.addMuxed(e.operation.SourceAccount(), history.EffectLiquidityPoolDeposited, details)
-	return nil
+
+	return e.addMuxed(e.operation.SourceAccount(), history.EffectLiquidityPoolDeposited, details)
 }
 
 func (e *effectsWrapper) addLiquidityPoolWithdrawEffect() error {
@@ -1380,6 +1448,130 @@ func (e *effectsWrapper) addLiquidityPoolWithdrawEffect() error {
 		},
 		"shares_redeemed": amount.String(-delta.TotalPoolShares),
 	}
-	e.addMuxed(e.operation.SourceAccount(), history.EffectLiquidityPoolWithdrew, details)
+
+	return e.addMuxed(e.operation.SourceAccount(), history.EffectLiquidityPoolWithdrew, details)
+}
+
+// addInvokeHostFunctionEffects iterates through the events and generates
+// account_credited and account_debited effects when it sees events related to
+// the Stellar Asset Contract corresponding to those effects.
+func (e *effectsWrapper) addInvokeHostFunctionEffects(events []contractevents.Event) error {
+	if e.operation.network == "" {
+		return errors.New("invokeHostFunction effects cannot be determined unless network passphrase is set")
+	}
+
+	source := e.operation.SourceAccount()
+	for _, event := range events {
+		evt, err := contractevents.NewStellarAssetContractEvent(&event, e.operation.network)
+		if err != nil {
+			continue // irrelevant or unsupported event
+		}
+
+		details := make(map[string]interface{}, 4)
+		if err := addAssetDetails(details, evt.GetAsset(), ""); err != nil {
+			return errors.Wrapf(err, "invokeHostFunction asset details had an error")
+		}
+
+		//
+		// Note: We ignore effects that involve contracts (until the day we have
+		// contract_debited/credited effects, may it never come :pray:)
+		//
+
+		switch evt.GetType() {
+		// Transfer events generate an `account_debited` effect for the `from`
+		// (sender) and an `account_credited` effect for the `to` (recipient).
+		case contractevents.EventTypeTransfer:
+			transferEvent := evt.(*contractevents.TransferEvent)
+			details["amount"] = amount.String128(transferEvent.Amount)
+			toDetails := map[string]interface{}{}
+			for key, val := range details {
+				toDetails[key] = val
+			}
+
+			if strkey.IsValidEd25519PublicKey(transferEvent.From) {
+				if err := e.add(
+					transferEvent.From,
+					null.String{},
+					history.EffectAccountDebited,
+					details,
+				); err != nil {
+					return errors.Wrapf(err, "invokeHostFunction asset details from contract xfr-from had an error")
+				}
+			} else {
+				details["contract"] = transferEvent.From
+				e.addMuxed(source, history.EffectContractDebited, details)
+			}
+
+			if strkey.IsValidEd25519PublicKey(transferEvent.To) {
+				if err := e.add(
+					transferEvent.To,
+					null.String{},
+					history.EffectAccountCredited,
+					toDetails,
+				); err != nil {
+					return errors.Wrapf(err, "invokeHostFunction asset details from contract xfr-to had an error")
+				}
+			} else {
+				toDetails["contract"] = transferEvent.To
+				e.addMuxed(source, history.EffectContractCredited, toDetails)
+			}
+
+		// Mint events imply a non-native asset, and it results in a credit to
+		// the `to` recipient.
+		case contractevents.EventTypeMint:
+			mintEvent := evt.(*contractevents.MintEvent)
+			details["amount"] = amount.String128(mintEvent.Amount)
+			if strkey.IsValidEd25519PublicKey(mintEvent.To) {
+				if err := e.add(
+					mintEvent.To,
+					null.String{},
+					history.EffectAccountCredited,
+					details,
+				); err != nil {
+					return errors.Wrapf(err, "invokeHostFunction asset details from contract mint had an error")
+				}
+			} else {
+				details["contract"] = mintEvent.To
+				e.addMuxed(source, history.EffectContractCredited, details)
+			}
+
+		// Clawback events result in a debit to the `from` address, but acts
+		// like a burn to the recipient, so these are functionally equivalent
+		case contractevents.EventTypeClawback:
+			cbEvent := evt.(*contractevents.ClawbackEvent)
+			details["amount"] = amount.String128(cbEvent.Amount)
+			if strkey.IsValidEd25519PublicKey(cbEvent.From) {
+				if err := e.add(
+					cbEvent.From,
+					null.String{},
+					history.EffectAccountDebited,
+					details,
+				); err != nil {
+					return errors.Wrapf(err, "invokeHostFunction asset details from contract clawback had an error")
+				}
+			} else {
+				details["contract"] = cbEvent.From
+				e.addMuxed(source, history.EffectContractDebited, details)
+			}
+
+		case contractevents.EventTypeBurn:
+			burnEvent := evt.(*contractevents.BurnEvent)
+			details["amount"] = amount.String128(burnEvent.Amount)
+			if strkey.IsValidEd25519PublicKey(burnEvent.From) {
+				if err := e.add(
+					burnEvent.From,
+					null.String{},
+					history.EffectAccountDebited,
+					details,
+				); err != nil {
+					return errors.Wrapf(err, "invokeHostFunction asset details from contract burn had an error")
+				}
+			} else {
+				details["contract"] = burnEvent.From
+				e.addMuxed(source, history.EffectContractDebited, details)
+			}
+		}
+	}
+
 	return nil
 }

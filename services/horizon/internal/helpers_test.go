@@ -8,7 +8,6 @@ import (
 
 	"github.com/stellar/go/network"
 	"github.com/stellar/go/services/horizon/internal/test"
-	tdb "github.com/stellar/go/services/horizon/internal/test/db"
 	supportLog "github.com/stellar/go/support/log"
 )
 
@@ -22,8 +21,7 @@ func NewTestApp(dsn string) *App {
 
 func NewTestConfig(dsn string) Config {
 	return Config{
-		DatabaseURL:            dsn,
-		StellarCoreDatabaseURL: tdb.StellarCoreURL(),
+		DatabaseURL: dsn,
 		RateQuota: &throttled.RateQuota{
 			MaxRate:  throttled.PerHour(1000),
 			MaxBurst: 100,

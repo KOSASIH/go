@@ -1,0 +1,16 @@
+syntax = "proto3";
+
+package address;
+
+enum AddressType {
+  ADDRESS_TYPE_ACCOUNT = 0;
+  ADDRESS_TYPE_CONTRACT = 1;
+  ADDRESS_TYPE_LIQUIDITY_POOL = 2;
+  ADDRESS_TYPE_CLAIMABLE_BALANCE = 3;
+  ADDRESS_TYPE_MUXED_ACCOUNT = 4;
+}
+
+message Address {
+  AddressType address_type = 1;
+  string str_key = 2;
+}

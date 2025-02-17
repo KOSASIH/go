@@ -8,7 +8,7 @@ type MockQOperations struct {
 }
 
 // NewOperationBatchInsertBuilder mock
-func (m *MockQOperations) NewOperationBatchInsertBuilder(maxBatchSize int) OperationBatchInsertBuilder {
-	a := m.Called(maxBatchSize)
+func (m *MockQOperations) NewOperationBatchInsertBuilder() OperationBatchInsertBuilder {
+	a := m.Called()
 	return a.Get(0).(OperationBatchInsertBuilder)
 }

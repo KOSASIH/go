@@ -1,6 +1,7 @@
 package xdr
 
 import (
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"regexp"
@@ -44,7 +45,7 @@ func MustNewCreditAsset(code string, issuer string) Asset {
 	return a
 }
 
-// NewAssetCodeFromString returns a new allow trust asset, panicking if it can't.
+// NewAssetCodeFromString returns a new credit asset, erroring if it can't.
 func NewAssetCodeFromString(code string) (AssetCode, error) {
 	a := AssetCode{}
 	length := len(code)
@@ -432,4 +433,25 @@ func (a *Asset) LessThan(b Asset) bool {
 	}
 
 	return a.GetIssuer() < b.GetIssuer()
+}
+
+// ContractID returns the expected Stellar Asset Contract id for the given
+// asset and network.
+func (a Asset) ContractID(passphrase string) ([32]byte, error) {
+	networkId := Hash(sha256.Sum256([]byte(passphrase)))
+	preImage := HashIdPreimage{
+		Type: EnvelopeTypeEnvelopeTypeContractId,
+		ContractId: &HashIdPreimageContractId{
+			NetworkId: networkId,
+			ContractIdPreimage: ContractIdPreimage{
+				Type:      ContractIdPreimageTypeContractIdPreimageFromAsset,
+				FromAsset: &a,
+			},
+		},
+	}
+	xdrPreImageBytes, err := preImage.MarshalBinary()
+	if err != nil {
+		return [32]byte{}, err
+	}
+	return sha256.Sum256(xdrPreImageBytes), nil
 }

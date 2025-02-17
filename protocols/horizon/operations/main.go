@@ -38,6 +38,9 @@ var TypeNames = map[xdr.OperationType]string{
 	xdr.OperationTypeSetTrustLineFlags:             "set_trust_line_flags",
 	xdr.OperationTypeLiquidityPoolDeposit:          "liquidity_pool_deposit",
 	xdr.OperationTypeLiquidityPoolWithdraw:         "liquidity_pool_withdraw",
+	xdr.OperationTypeInvokeHostFunction:            "invoke_host_function",
+	xdr.OperationTypeExtendFootprintTtl:            "extend_footprint_ttl",
+	xdr.OperationTypeRestoreFootprint:              "restore_footprint",
 }
 
 // Base represents the common attributes of an operation resource
@@ -344,6 +347,68 @@ type LiquidityPoolWithdraw struct {
 	ReservesReceived []base.AssetAmount `json:"reserves_received"`
 }
 
+// InvokeHostFunction is the json resource representing a single InvokeHostFunctionOp.
+// The model for InvokeHostFunction assimilates InvokeHostFunctionOp, but is simplified.
+// HostFunction         - contract function invocation to be performed.
+// AssetBalanceChanges  - array of asset balance changed records related to contract invocations in this host invocation.
+//
+//	The asset balance change record is captured at ingestion time from the asset contract
+//	events present in tx meta. Only asset contract events that have a reference to classic account in
+//	either the 'from' or 'to' participants will be included here as an asset balance change.
+//	Any pure contract-to-contract events with no reference to classic accounts are not included,
+//	as there is no explicit model in horizon for contract addresses yet.
+type InvokeHostFunction struct {
+	Base
+	Function            string                       `json:"function"`
+	Parameters          []HostFunctionParameter      `json:"parameters"`
+	Address             string                       `json:"address"`
+	Salt                string                       `json:"salt"`
+	AssetBalanceChanges []AssetContractBalanceChange `json:"asset_balance_changes"`
+}
+
+// InvokeHostFunction parameter model, intentionally simplified, Value
+// just contains a base64 encoded string of the ScVal xdr serialization.
+type HostFunctionParameter struct {
+	Value string `json:"value"`
+	Type  string `json:"type"`
+}
+
+// ExtendFootprintTtl is the json resource representing a single ExtendFootprintTtlOp.
+// The model for ExtendFootprintTtl assimilates ExtendFootprintTtlOp, but is simplified.
+type ExtendFootprintTtl struct {
+	Base
+	ExtendTo uint32 `json:"extend_to"`
+}
+
+// RestoreFootprint is the json resource representing a single RestoreFootprint.
+type RestoreFootprint struct {
+	Base
+}
+
+// Type   - refers to the source SAC Event
+//
+//	it can only be one of 'transfer', 'mint', 'clawback' or 'burn'
+//
+// From   - this is classic account that asset balance was changed,
+//
+//	or absent if not applicable for function
+//
+// To     - this is the classic account that asset balance was changed,
+//
+//	         or absent if not applicable for function
+//
+//		for asset contract event type, it can be absent such as 'burn'
+//
+// Amount - expressed as a signed decimal to 7 digits precision.
+// Asset  - the classic asset expressed as issuer and code.
+type AssetContractBalanceChange struct {
+	base.Asset
+	Type   string `json:"type"`
+	From   string `json:"from,omitempty"`
+	To     string `json:"to,omitempty"`
+	Amount string `json:"amount"`
+}
+
 // Operation interface contains methods implemented by the operation types
 type Operation interface {
 	GetBase() Base
@@ -567,6 +632,24 @@ func UnmarshalOperation(operationTypeID int32, dataString []byte) (ops Operation
 		ops = op
 	case xdr.OperationTypeLiquidityPoolWithdraw:
 		var op LiquidityPoolWithdraw
+		if err = json.Unmarshal(dataString, &op); err != nil {
+			return
+		}
+		ops = op
+	case xdr.OperationTypeInvokeHostFunction:
+		var op InvokeHostFunction
+		if err = json.Unmarshal(dataString, &op); err != nil {
+			return
+		}
+		ops = op
+	case xdr.OperationTypeExtendFootprintTtl:
+		var op ExtendFootprintTtl
+		if err = json.Unmarshal(dataString, &op); err != nil {
+			return
+		}
+		ops = op
+	case xdr.OperationTypeRestoreFootprint:
+		var op RestoreFootprint
 		if err = json.Unmarshal(dataString, &op); err != nil {
 			return
 		}

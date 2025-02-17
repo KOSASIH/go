@@ -233,11 +233,11 @@ func (o *OrderBookStream) verifyAllOffers(ctx context.Context, offers []xdr.Offe
 			offerRowXDR := offerToXDR(offerRow)
 			offerEntryBase64, err := o.encodingBuffer.MarshalBase64(&offerEntry)
 			if err != nil {
-				return false, errors.Wrap(err, "Error from marshalling offerEntry")
+				return false, errors.Wrap(err, "Error from marshaling offerEntry")
 			}
 			offerRowBase64, err := o.encodingBuffer.MarshalBase64(&offerRowXDR)
 			if err != nil {
-				return false, errors.Wrap(err, "Error from marshalling offerRowXDR")
+				return false, errors.Wrap(err, "Error from marshaling offerRowXDR")
 			}
 			if offerEntryBase64 != offerRowBase64 {
 				mismatch = true
@@ -290,11 +290,11 @@ func (o *OrderBookStream) verifyAllLiquidityPools(ctx context.Context, liquidity
 			}
 			liquidityPoolEntryBase64, err = o.encodingBuffer.MarshalBase64(&liquidityPoolEntry)
 			if err != nil {
-				return false, errors.Wrap(err, "Error from marshalling liquidityPoolEntry")
+				return false, errors.Wrap(err, "Error from marshaling liquidityPoolEntry")
 			}
 			liquidityPoolRowBase64, err = o.encodingBuffer.MarshalBase64(&liquidityPoolRowXDR)
 			if err != nil {
-				return false, errors.Wrap(err, "Error from marshalling liquidityPoolRowXDR")
+				return false, errors.Wrap(err, "Error from marshaling liquidityPoolRowXDR")
 			}
 			if liquidityPoolEntryBase64 != liquidityPoolRowBase64 {
 				mismatch = true
@@ -318,7 +318,7 @@ func (o *OrderBookStream) verifyAllLiquidityPools(ctx context.Context, liquidity
 // After calling this function, the the in memory order book graph should be consistent with the
 // Horizon DB (assuming no error is returned).
 func (o *OrderBookStream) Update(ctx context.Context) error {
-	if err := o.historyQ.BeginTx(&sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead}); err != nil {
+	if err := o.historyQ.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead}); err != nil {
 		return errors.Wrap(err, "Error starting repeatable read transaction")
 	}
 	defer o.historyQ.Rollback()
@@ -353,7 +353,7 @@ func (o *OrderBookStream) Update(ctx context.Context) error {
 
 		offersOk, err := o.verifyAllOffers(ctx, offers)
 		if err != nil {
-			if !isCancelledError(err) {
+			if !isCancelledError(ctx, err) {
 				log.WithError(err).Info("Could not verify offers")
 				return nil
 			}
@@ -361,7 +361,7 @@ func (o *OrderBookStream) Update(ctx context.Context) error {
 
 		liquidityPoolsOK, err := o.verifyAllLiquidityPools(ctx, pools)
 		if err != nil {
-			if !isCancelledError(err) {
+			if !isCancelledError(ctx, err) {
 				log.WithError(err).Info("Could not verify liquidity pools")
 				return nil
 			}
@@ -383,7 +383,7 @@ func (o *OrderBookStream) Run(ctx context.Context) {
 	for {
 		select {
 		case <-ticker.C:
-			if err := o.Update(ctx); err != nil && !isCancelledError(err) {
+			if err := o.Update(ctx); err != nil && !isCancelledError(ctx, err) {
 				log.WithError(err).Error("could not apply updates from order book stream")
 			}
 		case <-ctx.Done():

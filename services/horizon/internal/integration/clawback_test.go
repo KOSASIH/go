@@ -23,7 +23,7 @@ func TestHappyClawbackAccount(t *testing.T) {
 
 	asset, fromKey, _ := setupClawbackAccountTest(tt, itest, master)
 
-	// Clawback all of the asset
+	// Clawback all the asset
 	submissionResp := itest.MustSubmitOperations(itest.MasterAccount(), master, &txnbuild.Clawback{
 		From:   fromKey.Address(),
 		Amount: "10",
@@ -93,7 +93,7 @@ func TestHappyClawbackAccountSellingLiabilities(t *testing.T) {
 		Buying:        txnbuild.NativeAsset{},
 		Selling:       asset,
 		Amount:        "5",
-		Price:         xdr.Price{1, 1},
+		Price:         xdr.Price{N: 1, D: 1},
 		SourceAccount: fromAccount.GetAccountID(),
 	})
 	tt.True(submissionResp.Successful)
@@ -148,7 +148,7 @@ func TestSadClawbackAccountSufficientFundsSellingLiabilities(t *testing.T) {
 		Buying:        txnbuild.NativeAsset{},
 		Selling:       asset,
 		Amount:        "5",
-		Price:         xdr.Price{1, 1},
+		Price:         xdr.Price{N: 1, D: 1},
 		SourceAccount: fromAccount.GetAccountID(),
 	})
 

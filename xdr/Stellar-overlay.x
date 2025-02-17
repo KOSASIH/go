@@ -27,6 +27,12 @@ struct SendMore
     uint32 numMessages;
 };
 
+struct SendMoreExtended
+{
+    uint32 numMessages;
+    uint32 numBytes;
+};
+
 struct AuthCert
 {
     Curve25519Public pubkey;
@@ -47,16 +53,14 @@ struct Hello
     uint256 nonce;
 };
 
-
-// During the roll-out phrase, pull mode will be optional.
+// During the roll-out phrase, nodes can disable flow control in bytes.
 // Therefore, we need a way to communicate with other nodes
-// that we want/don't want pull mode.
-// However, the goal is for everyone to enable it by default,
-// so we don't want to introduce a new member variable.
-// For now, we'll use the `flags` field (originally named
-// `unused`) in `Auth`.
-// 100 is just a number that is not 0.
-const AUTH_MSG_FLAG_PULL_MODE_REQUESTED = 100;
+// that we want/don't want flow control in bytes.
+// We use the `flags` field in the Auth message with a special value
+// set to communicate this. Note that AUTH_MSG_FLAG_FLOW_CONTROL_BYTES_REQUESTED != 0
+// AND AUTH_MSG_FLAG_FLOW_CONTROL_BYTES_REQUESTED != 100 (as previously
+// that value was used for other purposes).
+const AUTH_MSG_FLAG_FLOW_CONTROL_BYTES_REQUESTED = 200;
 
 struct Auth
 {
@@ -83,7 +87,7 @@ struct PeerAddress
     uint32 numFailures;
 };
 
-// Next ID: 18
+// Next ID: 21
 enum MessageType
 {
     ERROR_MSG = 0,
@@ -112,8 +116,15 @@ enum MessageType
     SURVEY_RESPONSE = 15,
 
     SEND_MORE = 16,
+    SEND_MORE_EXTENDED = 20,
+
     FLOOD_ADVERT = 18,
-    FLOOD_DEMAND = 19
+    FLOOD_DEMAND = 19,
+
+    TIME_SLICED_SURVEY_REQUEST = 21,
+    TIME_SLICED_SURVEY_RESPONSE = 22,
+    TIME_SLICED_SURVEY_START_COLLECTING = 23,
+    TIME_SLICED_SURVEY_STOP_COLLECTING = 24
 };
 
 struct DontHave
@@ -124,7 +135,41 @@ struct DontHave
 
 enum SurveyMessageCommandType
 {
-    SURVEY_TOPOLOGY = 0
+    SURVEY_TOPOLOGY = 0,
+    TIME_SLICED_SURVEY_TOPOLOGY = 1
+};
+
+enum SurveyMessageResponseType
+{
+    SURVEY_TOPOLOGY_RESPONSE_V0 = 0,
+    SURVEY_TOPOLOGY_RESPONSE_V1 = 1,
+    SURVEY_TOPOLOGY_RESPONSE_V2 = 2
+};
+
+struct TimeSlicedSurveyStartCollectingMessage
+{
+    NodeID surveyorID;
+    uint32 nonce;
+    uint32 ledgerNum;
+};
+
+struct SignedTimeSlicedSurveyStartCollectingMessage
+{
+    Signature signature;
+    TimeSlicedSurveyStartCollectingMessage startCollecting;
+};
+
+struct TimeSlicedSurveyStopCollectingMessage
+{
+    NodeID surveyorID;
+    uint32 nonce;
+    uint32 ledgerNum;
+};
+
+struct SignedTimeSlicedSurveyStopCollectingMessage
+{
+    Signature signature;
+    TimeSlicedSurveyStopCollectingMessage stopCollecting;
 };
 
 struct SurveyRequestMessage
@@ -136,10 +181,24 @@ struct SurveyRequestMessage
     SurveyMessageCommandType commandType;
 };
 
+struct TimeSlicedSurveyRequestMessage
+{
+    SurveyRequestMessage request;
+    uint32 nonce;
+    uint32 inboundPeersIndex;
+    uint32 outboundPeersIndex;
+};
+
 struct SignedSurveyRequestMessage
 {
     Signature requestSignature;
     SurveyRequestMessage request;
+};
+
+struct SignedTimeSlicedSurveyRequestMessage
+{
+    Signature requestSignature;
+    TimeSlicedSurveyRequestMessage request;
 };
 
 typedef opaque EncryptedBody<64000>;
@@ -152,10 +211,22 @@ struct SurveyResponseMessage
     EncryptedBody encryptedBody;
 };
 
+struct TimeSlicedSurveyResponseMessage
+{
+    SurveyResponseMessage response;
+    uint32 nonce;
+};
+
 struct SignedSurveyResponseMessage
 {
     Signature responseSignature;
     SurveyResponseMessage response;
+};
+
+struct SignedTimeSlicedSurveyResponseMessage
+{
+    Signature responseSignature;
+    TimeSlicedSurveyResponseMessage response;
 };
 
 struct PeerStats
@@ -181,7 +252,35 @@ struct PeerStats
 
 typedef PeerStats PeerStatList<25>;
 
-struct TopologyResponseBody
+struct TimeSlicedNodeData
+{
+    uint32 addedAuthenticatedPeers;
+    uint32 droppedAuthenticatedPeers;
+    uint32 totalInboundPeerCount;
+    uint32 totalOutboundPeerCount;
+
+    // SCP stats
+    uint32 p75SCPFirstToSelfLatencyMs;
+    uint32 p75SCPSelfToOtherLatencyMs;
+
+    // How many times the node lost sync in the time slice
+    uint32 lostSyncCount;
+
+    // Config data
+    bool isValidator;
+    uint32 maxInboundPeerCount;
+    uint32 maxOutboundPeerCount;
+};
+
+struct TimeSlicedPeerData
+{
+    PeerStats peerStats;
+    uint32 averageLatencyMs;
+};
+
+typedef TimeSlicedPeerData TimeSlicedPeerDataList<25>;
+
+struct TopologyResponseBodyV0
 {
     PeerStatList inboundPeers;
     PeerStatList outboundPeers;
@@ -190,10 +289,33 @@ struct TopologyResponseBody
     uint32 totalOutboundPeerCount;
 };
 
-union SurveyResponseBody switch (SurveyMessageCommandType type)
+struct TopologyResponseBodyV1
 {
-case SURVEY_TOPOLOGY:
-    TopologyResponseBody topologyResponseBody;
+    PeerStatList inboundPeers;
+    PeerStatList outboundPeers;
+
+    uint32 totalInboundPeerCount;
+    uint32 totalOutboundPeerCount;
+
+    uint32 maxInboundPeerCount;
+    uint32 maxOutboundPeerCount;
+};
+
+struct TopologyResponseBodyV2
+{
+    TimeSlicedPeerDataList inboundPeers;
+    TimeSlicedPeerDataList outboundPeers;
+    TimeSlicedNodeData nodeData;
+};
+
+union SurveyResponseBody switch (SurveyMessageResponseType type)
+{
+case SURVEY_TOPOLOGY_RESPONSE_V0:
+    TopologyResponseBodyV0 topologyResponseBodyV0;
+case SURVEY_TOPOLOGY_RESPONSE_V1:
+    TopologyResponseBodyV1 topologyResponseBodyV1;
+case SURVEY_TOPOLOGY_RESPONSE_V2:
+    TopologyResponseBodyV2 topologyResponseBodyV2;
 };
 
 const TX_ADVERT_VECTOR_MAX_SIZE = 1000;
@@ -243,6 +365,20 @@ case SURVEY_REQUEST:
 case SURVEY_RESPONSE:
     SignedSurveyResponseMessage signedSurveyResponseMessage;
 
+case TIME_SLICED_SURVEY_REQUEST:
+    SignedTimeSlicedSurveyRequestMessage signedTimeSlicedSurveyRequestMessage;
+
+case TIME_SLICED_SURVEY_RESPONSE:
+    SignedTimeSlicedSurveyResponseMessage signedTimeSlicedSurveyResponseMessage;
+
+case TIME_SLICED_SURVEY_START_COLLECTING:
+    SignedTimeSlicedSurveyStartCollectingMessage
+        signedTimeSlicedSurveyStartCollectingMessage;
+
+case TIME_SLICED_SURVEY_STOP_COLLECTING:
+    SignedTimeSlicedSurveyStopCollectingMessage
+        signedTimeSlicedSurveyStopCollectingMessage;
+
 // SCP
 case GET_SCP_QUORUMSET:
     uint256 qSetHash;
@@ -254,7 +390,8 @@ case GET_SCP_STATE:
     uint32 getSCPLedgerSeq; // ledger seq requested ; if 0, requests the latest
 case SEND_MORE:
     SendMore sendMoreMessage;
-
+case SEND_MORE_EXTENDED:
+    SendMoreExtended sendMoreExtendedMessage;
 // Pull mode
 case FLOOD_ADVERT:
      FloodAdvert floodAdvert;

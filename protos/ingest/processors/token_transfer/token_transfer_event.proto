@@ -1,0 +1,56 @@
+syntax = "proto3";
+
+package token_transfer;
+
+import "google/protobuf/timestamp.proto";
+
+// Import are relative to the top level directory -  `/protos`
+import "ingest/address/address.proto";
+import "ingest/asset/asset.proto";
+
+// EventMeta message
+message EventMeta {
+  uint32 ledger_sequence = 1;
+  google.protobuf.Timestamp closed_at = 2;
+  string tx_hash = 3;
+  optional uint32 operation_index = 4;
+  address.Address contract_address = 5;
+}
+
+message Transfer {
+  address.Address from = 1;
+  address.Address to = 2;
+  string amount = 3;
+}
+
+message Mint {
+  address.Address to = 1;
+  string amount = 2;
+}
+
+message Burn {
+  address.Address from = 1;
+  string amount = 2;
+}
+
+message Clawback {
+  address.Address from = 1;
+  string amount = 3;
+}
+
+message Fee {
+  address.Address from = 1;
+  string amount = 2;
+}
+
+message TokenTransferEvent {
+  EventMeta meta = 1;
+  asset.Asset asset = 2; // Asset can be native or issued. For custom tokens, it will be absent
+  oneof event {
+    Transfer transfer = 3;
+    Mint mint = 4;
+    Burn burn = 5;
+    Clawback clawback = 6;
+    Fee fee = 7;
+  }
+}

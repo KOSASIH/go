@@ -57,25 +57,25 @@ func NewStateVerifier(stateReader ingest.ChangeReader, tf TransformLedgerEntryFu
 	}
 }
 
-// GetLedgerKeys returns up to `count` ledger keys from history buckets
-// storing actual entries in cache to compare in Write.
-func (v *StateVerifier) GetLedgerKeys(count int) ([]xdr.LedgerKey, error) {
+// GetLedgerEntries returns up to `count` ledger entries from history buckets
+// and stores the entries in cache to compare in Write.
+func (v *StateVerifier) GetLedgerEntries(count int) ([]xdr.LedgerEntry, error) {
 	err := v.checkUnreadEntries()
 	if err != nil {
 		return nil, err
 	}
 
-	keys := make([]xdr.LedgerKey, 0, count)
-	v.currentEntries = make(map[string]xdr.LedgerEntry)
+	entries := make([]xdr.LedgerEntry, 0, count)
+	v.currentEntries = make(map[string]xdr.LedgerEntry, count)
 
 	for count > 0 {
 		entryChange, err := v.stateReader.Read()
 		if err != nil {
 			if err == io.EOF {
 				v.readingDone = true
-				return keys, nil
+				return entries, nil
 			}
-			return keys, err
+			return entries, err
 		}
 
 		entry := *entryChange.Post
@@ -87,21 +87,24 @@ func (v *StateVerifier) GetLedgerKeys(count int) ([]xdr.LedgerKey, error) {
 			}
 		}
 
-		ledgerKey := entry.LedgerKey()
+		ledgerKey, err := entry.LedgerKey()
+		if err != nil {
+			return entries, errors.Wrap(err, "Error marshaling ledgerKey")
+		}
 		key, err := v.encodingBuffer.MarshalBinary(ledgerKey)
 		if err != nil {
-			return keys, errors.Wrap(err, "Error marshaling ledgerKey")
+			return entries, errors.Wrap(err, "Error marshaling ledgerKey")
 		}
 
-		keys = append(keys, ledgerKey)
 		entry.Normalize()
+		entries = append(entries, entry)
 		v.currentEntries[string(key)] = entry
 
 		count--
 		v.readEntries++
 	}
 
-	return keys, nil
+	return entries, nil
 }
 
 // Write compares the entry with entries in the latest batch of entries fetched
@@ -117,20 +120,24 @@ func (v *StateVerifier) Write(entry xdr.LedgerEntry) error {
 	}
 
 	// safe, since we convert to string right away (causing a copy)
-	key, err := v.encodingBuffer.UnsafeMarshalBinary(actualEntry.LedgerKey())
+	key, err := actualEntry.LedgerKey()
 	if err != nil {
 		return errors.Wrap(err, "Error marshaling ledgerKey")
 	}
-
-	expectedEntry, exist := v.currentEntries[string(key)]
+	keyBinary, err := v.encodingBuffer.UnsafeMarshalBinary(key)
+	if err != nil {
+		return errors.Wrap(err, "Error marshaling ledgerKey")
+	}
+	keyString := string(keyBinary)
+	expectedEntry, exist := v.currentEntries[keyString]
 	if !exist {
 		return ingest.NewStateError(errors.Errorf(
 			"Cannot find entry in currentEntries map: %s (key = %s)",
 			base64.StdEncoding.EncodeToString(actualEntryMarshaled),
-			base64.StdEncoding.EncodeToString(key),
+			base64.StdEncoding.EncodeToString(keyBinary),
 		))
 	}
-	delete(v.currentEntries, string(key))
+	delete(v.currentEntries, keyString)
 
 	preTransformExpectedEntry := expectedEntry
 	preTransformExpectedEntryMarshaled, err := v.encodingBuffer.MarshalBinary(&preTransformExpectedEntry)

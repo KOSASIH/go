@@ -171,7 +171,7 @@ func TestManageSellOfferRoundtrip(t *testing.T) {
 		Price:         price.MustParse("0.01"),
 		OfferID:       0,
 	}
-	testOperationsMarshallingRoundtrip(t, []Operation{&manageSellOffer}, false)
+	testOperationsMarshalingRoundtrip(t, []Operation{&manageSellOffer}, false)
 
 	// with muxed accounts
 	manageSellOffer = ManageSellOffer{
@@ -182,5 +182,5 @@ func TestManageSellOfferRoundtrip(t *testing.T) {
 		Price:         price.MustParse("0.01"),
 		OfferID:       0,
 	}
-	testOperationsMarshallingRoundtrip(t, []Operation{&manageSellOffer}, true)
+	testOperationsMarshalingRoundtrip(t, []Operation{&manageSellOffer}, true)
 }

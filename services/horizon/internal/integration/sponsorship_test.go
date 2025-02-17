@@ -516,7 +516,7 @@ func TestSponsorships(t *testing.T) {
 				Selling:       txnbuild.NativeAsset{},
 				Buying:        asset,
 				Amount:        "3",
-				Price:         xdr.Price{1, 1},
+				Price:         xdr.Price{N: 1, D: 1},
 			})
 
 		signers := []*keypair.Full{sponsorPair, newAccountPair}
@@ -738,6 +738,63 @@ func TestSponsorships(t *testing.T) {
 			actual, needed := counts[0], counts[1]
 			tt.Equalf(needed, actual, "effect %s not found enough", expectedType)
 		}
+	})
+
+	t.Run("ClaimableBalanceTransferSponsorship", func(t *testing.T) {
+		keys, accounts := itest.CreateAccounts(3, "150")
+		sponsorPair1, sponsor1 := keys[0], accounts[0]
+		sponsoreePair, _ := keys[1], accounts[1]
+		sponsorPair2, sponsor2 := keys[2], accounts[2]
+
+		// Create a claimable balance
+		op := &txnbuild.CreateClaimableBalance{
+			SourceAccount: sponsor1.GetAccountID(),
+			Destinations: []txnbuild.Claimant{
+				txnbuild.NewClaimant(sponsorPair1.Address(), nil),
+				txnbuild.NewClaimant(sponsoreePair.Address(), nil),
+			},
+			Amount: "10",
+			Asset:  txnbuild.NativeAsset{},
+		}
+
+		_, err := itest.SubmitOperations(sponsor1, sponsorPair1, op)
+		tt.NoError(err)
+
+		balances, err := client.ClaimableBalances(sdk.ClaimableBalanceRequest{})
+		tt.NoError(err)
+
+		// Verify the sponsor
+		claims := balances.Embedded.Records
+		tt.Len(claims, 1)
+		balance := claims[0]
+		tt.Equal(sponsorPair1.Address(), balance.Sponsor)
+
+		// Transfer sponsorship
+		ops := []txnbuild.Operation{
+			&txnbuild.BeginSponsoringFutureReserves{
+				SourceAccount: sponsor2.GetAccountID(),
+				SponsoredID:   sponsorPair1.Address(),
+			},
+			&txnbuild.RevokeSponsorship{
+				SponsorshipType:  txnbuild.RevokeSponsorshipTypeClaimableBalance,
+				SourceAccount:    sponsor1.GetAccountID(),
+				ClaimableBalance: &claims[0].BalanceID,
+			},
+			&txnbuild.EndSponsoringFutureReserves{SourceAccount: sponsor1.GetAccountID()},
+		}
+
+		_, err = itest.SubmitMultiSigOperations(sponsor2, []*keypair.Full{sponsorPair1, sponsorPair2}, ops...)
+		tt.NoError(err)
+
+		balances, err = client.ClaimableBalances(sdk.ClaimableBalanceRequest{})
+		tt.NoError(err)
+
+		// Verify sponsorship transfer
+		claims = balances.Embedded.Records
+		tt.Len(claims, 1)
+		balance = claims[0]
+		tt.Equal(sponsorPair2.Address(), balance.Sponsor)
+
 	})
 }
 

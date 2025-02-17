@@ -7,11 +7,13 @@ import (
 	"net/http"
 
 	"github.com/stellar/go/network"
+	"github.com/stellar/go/support/errors"
+
 	"github.com/stellar/go/protocols/horizon"
+	"github.com/stellar/go/protocols/stellarcore"
 	hProblem "github.com/stellar/go/services/horizon/internal/render/problem"
 	"github.com/stellar/go/services/horizon/internal/resourceadapter"
 	"github.com/stellar/go/services/horizon/internal/txsub"
-	"github.com/stellar/go/support/errors"
 	"github.com/stellar/go/support/render/hal"
 	"github.com/stellar/go/support/render/problem"
 	"github.com/stellar/go/xdr"
@@ -24,7 +26,9 @@ type NetworkSubmitter interface {
 type SubmitTransactionHandler struct {
 	Submitter         NetworkSubmitter
 	NetworkPassphrase string
+	DisableTxSub      bool
 	CoreStateGetter
+	SkipTxMeta bool
 }
 
 type envelopeInfo struct {
@@ -57,7 +61,7 @@ func extractEnvelopeInfo(raw string, passphrase string) (envelopeInfo, error) {
 	return result, nil
 }
 
-func (handler SubmitTransactionHandler) validateBodyType(r *http.Request) error {
+func validateBodyType(r *http.Request) error {
 	c := r.Header.Get("Content-Type")
 	if c == "" {
 		return nil
@@ -82,27 +86,54 @@ func (handler SubmitTransactionHandler) response(r *http.Request, info envelopeI
 			info.hash,
 			&resource,
 			result.Transaction,
+			handler.SkipTxMeta,
 		)
 		return resource, err
 	}
 
 	if result.Err == txsub.ErrTimeout {
-		return nil, &hProblem.Timeout
+		return nil, &problem.P{
+			Type:   "transaction_submission_timeout",
+			Title:  "Transaction Submission Timeout",
+			Status: http.StatusGatewayTimeout,
+			Detail: "Your transaction submission request has timed out. This does not necessarily mean the submission has failed. " +
+				"Before resubmitting, please use the transaction hash provided in `extras.hash` to poll the GET /transactions endpoint for sometime and " +
+				"check if it was included in a ledger.",
+			Extras: map[string]interface{}{
+				"hash":         info.hash,
+				"envelope_xdr": info.raw,
+			},
+		}
 	}
 
 	if result.Err == txsub.ErrCanceled {
 		return nil, &hProblem.ClientDisconnected
 	}
 
-	switch err := result.Err.(type) {
-	case *txsub.FailedTransactionError:
+	if failedErr, ok := result.Err.(*txsub.FailedTransactionError); ok {
 		rcr := horizon.TransactionResultCodes{}
-		resourceadapter.PopulateTransactionResultCodes(
+		err := resourceadapter.PopulateTransactionResultCodes(
 			r.Context(),
 			info.hash,
 			&rcr,
-			err,
+			failedErr,
 		)
+		if err != nil {
+			return nil, failedErr
+		}
+
+		extras := map[string]interface{}{
+			"envelope_xdr": info.raw,
+			"result_xdr":   failedErr.ResultXDR,
+			"result_codes": rcr,
+		}
+		if failedErr.DiagnosticEventsXDR != "" {
+			events, err := stellarcore.DiagnosticEventsToSlice(failedErr.DiagnosticEventsXDR)
+			if err != nil {
+				return nil, err
+			}
+			extras["diagnostic_events"] = events
+		}
 
 		return nil, &problem.P{
 			Type:   "transaction_failed",
@@ -112,11 +143,7 @@ func (handler SubmitTransactionHandler) response(r *http.Request, info envelopeI
 				"The `extras.result_codes` field on this response contains further " +
 				"details.  Descriptions of each code can be found at: " +
 				"https://developers.stellar.org/api/errors/http-status-codes/horizon-specific/transaction-failed/",
-			Extras: map[string]interface{}{
-				"envelope_xdr": info.raw,
-				"result_xdr":   err.ResultXDR,
-				"result_codes": rcr,
-			},
+			Extras: extras,
 		}
 	}
 
@@ -124,8 +151,19 @@ func (handler SubmitTransactionHandler) response(r *http.Request, info envelopeI
 }
 
 func (handler SubmitTransactionHandler) GetResource(w HeaderWriter, r *http.Request) (interface{}, error) {
-	if err := handler.validateBodyType(r); err != nil {
+	if err := validateBodyType(r); err != nil {
 		return nil, err
+	}
+
+	if handler.DisableTxSub {
+		return nil, &problem.P{
+			Type:   "transaction_submission_disabled",
+			Title:  "Transaction Submission Disabled",
+			Status: http.StatusForbidden,
+			Detail: "Transaction submission has been disabled for Horizon. " +
+				"To enable it again, remove env variable DISABLE_TX_SUB.",
+			Extras: map[string]interface{}{},
+		}
 	}
 
 	raw, err := getString(r, "tx")
@@ -164,6 +202,17 @@ func (handler SubmitTransactionHandler) GetResource(w HeaderWriter, r *http.Requ
 		if r.Context().Err() == context.Canceled {
 			return nil, hProblem.ClientDisconnected
 		}
-		return nil, hProblem.Timeout
+		return nil, &problem.P{
+			Type:   "transaction_submission_timeout",
+			Title:  "Transaction Submission Timeout",
+			Status: http.StatusGatewayTimeout,
+			Detail: "Your transaction submission request has timed out. This does not necessarily mean the submission has failed. " +
+				"Before resubmitting, please use the transaction hash provided in `extras.hash` to poll the GET /transactions endpoint for sometime and " +
+				"check if it was included in a ledger.",
+			Extras: map[string]interface{}{
+				"hash":         info.hash,
+				"envelope_xdr": raw,
+			},
+		}
 	}
 }

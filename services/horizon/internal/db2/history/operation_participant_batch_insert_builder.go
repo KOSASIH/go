@@ -10,40 +10,37 @@ import (
 // history_operations table
 type OperationParticipantBatchInsertBuilder interface {
 	Add(
-		ctx context.Context,
 		operationID int64,
-		accountID int64,
+		accountID FutureAccountID,
 	) error
-	Exec(ctx context.Context) error
+	Exec(ctx context.Context, session db.SessionInterface) error
 }
 
 // operationParticipantBatchInsertBuilder is a simple wrapper around db.BatchInsertBuilder
 type operationParticipantBatchInsertBuilder struct {
-	builder db.BatchInsertBuilder
+	table   string
+	builder db.FastBatchInsertBuilder
 }
 
-// NewOperationParticipantBatchInsertBuilder constructs a new TransactionBatchInsertBuilder instance
-func (q *Q) NewOperationParticipantBatchInsertBuilder(maxBatchSize int) OperationParticipantBatchInsertBuilder {
+// NewOperationParticipantBatchInsertBuilder constructs a new OperationParticipantBatchInsertBuilder instance
+func (q *Q) NewOperationParticipantBatchInsertBuilder() OperationParticipantBatchInsertBuilder {
 	return &operationParticipantBatchInsertBuilder{
-		builder: db.BatchInsertBuilder{
-			Table:        q.GetTable("history_operation_participants"),
-			MaxBatchSize: maxBatchSize,
-		},
+		table:   "history_operation_participants",
+		builder: db.FastBatchInsertBuilder{},
 	}
 }
 
 // Add adds an operation participant to the batch
 func (i *operationParticipantBatchInsertBuilder) Add(
-	ctx context.Context,
 	operationID int64,
-	accountID int64,
+	accountID FutureAccountID,
 ) error {
-	return i.builder.Row(ctx, map[string]interface{}{
+	return i.builder.Row(map[string]interface{}{
 		"history_operation_id": operationID,
 		"history_account_id":   accountID,
 	})
 }
 
-func (i *operationParticipantBatchInsertBuilder) Exec(ctx context.Context) error {
-	return i.builder.Exec(ctx)
+func (i *operationParticipantBatchInsertBuilder) Exec(ctx context.Context, session db.SessionInterface) error {
+	return i.builder.Exec(ctx, session, i.table)
 }

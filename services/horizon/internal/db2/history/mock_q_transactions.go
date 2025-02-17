@@ -7,12 +7,12 @@ type MockQTransactions struct {
 	mock.Mock
 }
 
-func (m *MockQTransactions) NewTransactionBatchInsertBuilder(maxBatchSize int) TransactionBatchInsertBuilder {
-	a := m.Called(maxBatchSize)
+func (m *MockQTransactions) NewTransactionBatchInsertBuilder() TransactionBatchInsertBuilder {
+	a := m.Called()
 	return a.Get(0).(TransactionBatchInsertBuilder)
 }
 
-func (m *MockQTransactions) NewTransactionFilteredTmpBatchInsertBuilder(maxBatchSize int) TransactionBatchInsertBuilder {
-	a := m.Called(maxBatchSize)
+func (m *MockQTransactions) NewTransactionFilteredTmpBatchInsertBuilder() TransactionBatchInsertBuilder {
+	a := m.Called()
 	return a.Get(0).(TransactionBatchInsertBuilder)
 }

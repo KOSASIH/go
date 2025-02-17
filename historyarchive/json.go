@@ -35,7 +35,7 @@ func DumpXdrAsJson(args []string) error {
 		}
 
 		base := path.Base(arg)
-		xr := NewXdrStream(rdr)
+		xr := xdr.NewStream(rdr)
 		n := 0
 		for {
 			var lhe xdr.LedgerHeaderHistoryEntry

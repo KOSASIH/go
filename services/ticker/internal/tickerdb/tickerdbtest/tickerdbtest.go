@@ -128,7 +128,7 @@ func SetupTickerTestSession(t *testing.T, migrationsDir string) (session tickerd
 
 	// Now let's create the trades:
 	trades := []tickerdb.Trade{
-		tickerdb.Trade{ // BTC_ETH  trade (ETH is from issuer 1)
+		{ // BTC_ETH  trade (ETH is from issuer 1)
 			HorizonID:       "hrzid1",
 			BaseAssetID:     btcAsset.ID,
 			BaseAmount:      100.0,
@@ -137,7 +137,7 @@ func SetupTickerTestSession(t *testing.T, migrationsDir string) (session tickerd
 			Price:           0.1,
 			LedgerCloseTime: tenMinutesAgo,
 		},
-		tickerdb.Trade{ // BTC_ETH trade (ETH is from issuer 2)
+		{ // BTC_ETH trade (ETH is from issuer 2)
 			HorizonID:       "hrzid3",
 			BaseAssetID:     btcAsset.ID,
 			BaseAmount:      24.0,
@@ -146,7 +146,7 @@ func SetupTickerTestSession(t *testing.T, migrationsDir string) (session tickerd
 			Price:           0.92,
 			LedgerCloseTime: now,
 		},
-		tickerdb.Trade{ // BTC_ETH  trade (ETH is from issuer 1)
+		{ // BTC_ETH  trade (ETH is from issuer 1)
 			HorizonID:       "hrzid2",
 			BaseAssetID:     btcAsset.ID,
 			BaseAmount:      50.0,
@@ -155,7 +155,7 @@ func SetupTickerTestSession(t *testing.T, migrationsDir string) (session tickerd
 			Price:           1.0,
 			LedgerCloseTime: oneHourAgo,
 		},
-		tickerdb.Trade{ // BTC_ETH  trade (ETH is from issuer 1)
+		{ // BTC_ETH  trade (ETH is from issuer 1)
 			HorizonID:       "hrzid4",
 			BaseAssetID:     btcAsset.ID,
 			BaseAmount:      50.0,
@@ -303,7 +303,7 @@ func SetupTickerTestSession(t *testing.T, migrationsDir string) (session tickerd
 
 	// Add XLM/BTC trades.
 	trades = []tickerdb.Trade{
-		tickerdb.Trade{
+		{
 			HorizonID:       "hrzid5",
 			BaseAssetID:     xlmAsset.ID,
 			BaseAmount:      10.0,
@@ -312,7 +312,7 @@ func SetupTickerTestSession(t *testing.T, migrationsDir string) (session tickerd
 			Price:           0.5, // close price & lowest price
 			LedgerCloseTime: tenMinutesAgo,
 		},
-		tickerdb.Trade{
+		{
 			HorizonID:       "hrzid6",
 			BaseAssetID:     xlmAsset.ID,
 			BaseAmount:      10.0,

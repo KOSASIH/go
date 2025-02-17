@@ -104,6 +104,7 @@ func createMinionAccounts(botAccount internal.Account, botKeypair *keypair.Full,
 				StartingBalance:      newAccountBalance,
 				SubmitTransaction:    internal.SubmitTransaction,
 				CheckSequenceRefresh: internal.CheckSequenceRefresh,
+				CheckAccountExists:   internal.CheckAccountExists,
 				BaseFee:              baseFee,
 			})
 

@@ -145,12 +145,14 @@ func getHandlerDeps(opts Options) (handlerDeps, error) {
 	}
 
 	allowedSourceAccounts := []*keypair.FromAddress{}
-	for _, addressStr := range strings.Split(opts.AllowedSourceAccounts, ",") {
-		accountAddress, err := keypair.ParseAddress(addressStr)
-		if err != nil {
-			return handlerDeps{}, errors.Wrap(err, "parsing allowed source accounts")
+	if opts.AllowedSourceAccounts != "" {
+		for _, addressStr := range strings.Split(opts.AllowedSourceAccounts, ",") {
+			accountAddress, err := keypair.ParseAddress(addressStr)
+			if err != nil {
+				return handlerDeps{}, errors.Wrap(err, "parsing allowed source accounts")
+			}
+			allowedSourceAccounts = append(allowedSourceAccounts, accountAddress)
 		}
-		allowedSourceAccounts = append(allowedSourceAccounts, accountAddress)
 	}
 
 	deps := handlerDeps{

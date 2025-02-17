@@ -3,11 +3,13 @@ package db
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/Masterminds/squirrel"
+	"github.com/lib/pq"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -25,6 +27,7 @@ var IngestSubservice = Subservice("ingest")
 
 type QueryType string
 
+var AdvisoryLockQueryType = QueryType("advisory_lock")
 var DeleteQueryType = QueryType("delete")
 var InsertQueryType = QueryType("insert")
 var SelectQueryType = QueryType("select")
@@ -57,6 +60,7 @@ type SessionWithMetrics struct {
 	maxLifetimeClosedCounter prometheus.CounterFunc
 	roundTripProbe           *roundTripProbe
 	roundTripTimeSummary     prometheus.Summary
+	errorCounter             *prometheus.CounterVec
 }
 
 func RegisterMetrics(base *Session, namespace string, sub Subservice, registry *prometheus.Registry) SessionInterface {
@@ -64,6 +68,8 @@ func RegisterMetrics(base *Session, namespace string, sub Subservice, registry *
 		SessionInterface: base,
 		registry:         registry,
 	}
+
+	base.AddErrorHandler(s.handleErrorEvent)
 
 	s.queryCounter = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
@@ -81,6 +87,7 @@ func RegisterMetrics(base *Session, namespace string, sub Subservice, registry *
 			Namespace: namespace, Subsystem: "db",
 			Name:        "query_duration_seconds",
 			ConstLabels: prometheus.Labels{"subservice": string(sub)},
+			Objectives:  map[float64]float64{0.5: 0.05, 0.9: 0.01, 0.99: 0.001},
 		},
 		[]string{"query_type", "error", "route"},
 	)
@@ -224,6 +231,18 @@ func RegisterMetrics(base *Session, namespace string, sub Subservice, registry *
 	)
 	registry.MustRegister(s.maxLifetimeClosedCounter)
 
+	s.errorCounter = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace:   namespace,
+			Subsystem:   "db",
+			Name:        "error_total",
+			Help:        "total number of db related errors, details are captured in labels",
+			ConstLabels: prometheus.Labels{"subservice": string(sub)},
+		},
+		[]string{"ctx_error", "db_error", "db_error_extra"},
+	)
+	registry.MustRegister(s.errorCounter)
+
 	s.roundTripTimeSummary = prometheus.NewSummary(
 		prometheus.SummaryOpts{
 			Namespace:   namespace,
@@ -231,6 +250,7 @@ func RegisterMetrics(base *Session, namespace string, sub Subservice, registry *
 			Name:        "round_trip_time_seconds",
 			Help:        "time required to run `select 1` query in a DB - effectively measures round trip time, if time exceeds 1s it will be recorded as 1",
 			ConstLabels: prometheus.Labels{"subservice": string(sub)},
+			Objectives:  map[float64]float64{0.5: 0.05, 0.9: 0.01, 0.99: 0.001},
 		},
 	)
 	registry.MustRegister(s.roundTripTimeSummary)
@@ -259,14 +279,9 @@ func (s *SessionWithMetrics) Close() error {
 	s.registry.Unregister(s.maxIdleClosedCounter)
 	s.registry.Unregister(s.maxIdleTimeClosedCounter)
 	s.registry.Unregister(s.maxLifetimeClosedCounter)
+	s.registry.Unregister(s.errorCounter)
 	return s.SessionInterface.Close()
 }
-
-// TODO: Implement these
-// func (s *SessionWithMetrics) BeginTx(ctx context.Context, opts *sql.TxOptions) error {
-// func (s *SessionWithMetrics) Begin(ctx context.Context) error {
-// func (s *SessionWithMetrics) Commit(ctx context.Context) error
-// func (s *SessionWithMetrics) Rollback(ctx context.Context) error
 
 func (s *SessionWithMetrics) TruncateTables(ctx context.Context, tables []string) (err error) {
 	timer := prometheus.NewTimer(prometheus.ObserverFunc(func(v float64) {
@@ -311,6 +326,7 @@ func (s *SessionWithMetrics) Clone() SessionInterface {
 		maxIdleClosedCounter:     s.maxIdleClosedCounter,
 		maxIdleTimeClosedCounter: s.maxIdleTimeClosedCounter,
 		maxLifetimeClosedCounter: s.maxLifetimeClosedCounter,
+		errorCounter:             s.errorCounter,
 	}
 }
 
@@ -353,6 +369,53 @@ func getQueryType(ctx context.Context, query squirrel.Sqlizer) QueryType {
 	return UndefinedQueryType
 }
 
+// derive the db 'error_total' metric from the err returned by libpq
+//
+// dbErr - the error returned by any libpq method call
+// ctx - the caller's context used on libpb method call
+func (s *SessionWithMetrics) handleErrorEvent(dbErr error, ctx context.Context) {
+	if dbErr == nil || s.NoRows(dbErr) {
+		return
+	}
+
+	ctxError := "n/a"
+	dbError := "other"
+	errorExtra := "n/a"
+	var pqErr *pq.Error
+
+	switch {
+	case errors.As(dbErr, &pqErr):
+		dbError = string(pqErr.Code)
+		switch pqErr.Message {
+		case "canceling statement due to user request":
+			errorExtra = "user_request"
+		case "canceling statement due to statement timeout":
+			errorExtra = "statement_timeout"
+		}
+	case strings.Contains(dbErr.Error(), "driver: bad connection"):
+		dbError = "driver_bad_connection"
+	case strings.Contains(dbErr.Error(), "sql: transaction has already been committed or rolled back"):
+		dbError = "tx_already_rollback"
+	case errors.Is(dbErr, context.Canceled):
+		dbError = "canceled"
+	case errors.Is(dbErr, context.DeadlineExceeded):
+		dbError = "deadline_exceeded"
+	}
+
+	switch {
+	case errors.Is(ctx.Err(), context.Canceled):
+		ctxError = "canceled"
+	case errors.Is(ctx.Err(), context.DeadlineExceeded):
+		ctxError = "deadline_exceeded"
+	}
+
+	s.errorCounter.With(prometheus.Labels{
+		"ctx_error":      ctxError,
+		"db_error":       dbError,
+		"db_error_extra": errorExtra,
+	}).Inc()
+}
+
 func (s *SessionWithMetrics) Get(ctx context.Context, dest interface{}, query squirrel.Sqlizer) (err error) {
 	queryType := string(getQueryType(ctx, query))
 	timer := prometheus.NewTimer(prometheus.ObserverFunc(func(v float64) {
@@ -370,7 +433,6 @@ func (s *SessionWithMetrics) Get(ctx context.Context, dest interface{}, query sq
 			"route":      contextRoute(ctx),
 		}).Inc()
 	}()
-
 	err = s.SessionInterface.Get(ctx, dest, query)
 	return err
 }
@@ -458,7 +520,7 @@ func (s *SessionWithMetrics) DeleteRange(
 	start, end int64,
 	table string,
 	idCol string,
-) (err error) {
+) (count int64, err error) {
 	queryType := "delete"
 	timer := prometheus.NewTimer(prometheus.ObserverFunc(func(v float64) {
 		s.queryDurationSummary.With(prometheus.Labels{
@@ -476,6 +538,6 @@ func (s *SessionWithMetrics) DeleteRange(
 		}).Inc()
 	}()
 
-	err = s.SessionInterface.DeleteRange(ctx, start, end, table, idCol)
-	return err
+	count, err = s.SessionInterface.DeleteRange(ctx, start, end, table, idCol)
+	return count, err
 }

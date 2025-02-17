@@ -8,9 +8,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+
+	"github.com/stellar/go/xdr"
 )
 
-type Hash [sha256.Size]byte
+type Hash xdr.Hash
 
 func DecodeHash(s string) (Hash, error) {
 	var h Hash

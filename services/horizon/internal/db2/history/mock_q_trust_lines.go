@@ -25,3 +25,8 @@ func (m *MockQTrustLines) RemoveTrustLines(ctx context.Context, ledgerKeys []str
 	a := m.Called(ctx, ledgerKeys)
 	return a.Get(0).(int64), a.Error(1)
 }
+
+func (m *MockQTrustLines) NewTrustLinesBatchInsertBuilder() TrustLinesBatchInsertBuilder {
+	a := m.Called()
+	return a.Get(0).(TrustLinesBatchInsertBuilder)
+}

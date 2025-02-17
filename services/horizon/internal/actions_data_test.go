@@ -44,12 +44,16 @@ func TestDataActions_Show(t *testing.T) {
 	ht.Assert.NoError(err)
 	err = q.UpdateIngestVersion(ht.Ctx, ingest.CurrentVersion)
 	ht.Assert.NoError(err)
-	_, err = q.InsertLedger(ht.Ctx, xdr.LedgerHeaderHistoryEntry{
+	ht.Assert.NoError(q.Begin(ht.Ctx))
+	ledgerBatch := q.NewLedgerBatchInsertBuilder()
+	err = ledgerBatch.Add(xdr.LedgerHeaderHistoryEntry{
 		Header: xdr.LedgerHeader{
 			LedgerSeq: 100,
 		},
 	}, 0, 0, 0, 0, 0)
 	ht.Assert.NoError(err)
+	ht.Assert.NoError(ledgerBatch.Exec(ht.Ctx, q))
+	ht.Assert.NoError(q.Commit())
 
 	err = q.UpsertAccountData(ht.Ctx, []history.Data{data1, data2})
 	assert.NoError(t, err)

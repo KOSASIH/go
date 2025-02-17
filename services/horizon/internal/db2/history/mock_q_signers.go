@@ -32,8 +32,8 @@ func (m *MockQSigners) AccountsForSigner(ctx context.Context, signer string, pag
 	return a.Get(0).([]AccountSigner), a.Error(1)
 }
 
-func (m *MockQSigners) NewAccountSignersBatchInsertBuilder(maxBatchSize int) AccountSignersBatchInsertBuilder {
-	a := m.Called(maxBatchSize)
+func (m *MockQSigners) NewAccountSignersBatchInsertBuilder() AccountSignersBatchInsertBuilder {
+	a := m.Called()
 	return a.Get(0).(AccountSignersBatchInsertBuilder)
 }
 
@@ -42,8 +42,8 @@ func (m *MockQSigners) CreateAccountSigner(ctx context.Context, account, signer 
 	return a.Get(0).(int64), a.Error(1)
 }
 
-func (m *MockQSigners) RemoveAccountSigner(ctx context.Context, account, signer string) (int64, error) {
-	a := m.Called(ctx, account, signer)
+func (m *MockQSigners) RemoveAccountSigners(ctx context.Context, account string, signers []string) (int64, error) {
+	a := m.Called(ctx, account, signers)
 	return a.Get(0).(int64), a.Error(1)
 }
 

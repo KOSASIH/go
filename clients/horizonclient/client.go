@@ -254,6 +254,10 @@ func (c *Client) stream(
 }
 
 func (c *Client) setClientAppHeaders(req *http.Request) {
+	for key, value := range c.Headers {
+		req.Header.Set(key, value)
+	}
+
 	req.Header.Set("X-Client-Name", "go-stellar-sdk")
 	req.Header.Set("X-Client-Version", c.Version())
 	req.Header.Set("X-App-Name", c.AppName)
@@ -436,6 +440,44 @@ func (c *Client) OperationDetail(id string) (ops operations.Operation, err error
 	return ops, nil
 }
 
+// validateFeeBumpTx checks if the inner transaction has a memo or not and converts the transaction object to
+// base64 string.
+func (c *Client) validateFeeBumpTx(transaction *txnbuild.FeeBumpTransaction, opts SubmitTxOpts) (string, error) {
+	var err error
+	if inner := transaction.InnerTransaction(); !opts.SkipMemoRequiredCheck && inner.Memo() == nil {
+		err = c.checkMemoRequired(inner)
+		if err != nil {
+			return "", err
+		}
+	}
+
+	txeBase64, err := transaction.Base64()
+	if err != nil {
+		err = errors.Wrap(err, "Unable to convert transaction object to base64 string")
+		return "", err
+	}
+	return txeBase64, nil
+}
+
+// validateTx checks if the transaction has a memo or not and converts the transaction object to
+// base64 string.
+func (c *Client) validateTx(transaction *txnbuild.Transaction, opts SubmitTxOpts) (string, error) {
+	var err error
+	if !opts.SkipMemoRequiredCheck && transaction.Memo() == nil {
+		err = c.checkMemoRequired(transaction)
+		if err != nil {
+			return "", err
+		}
+	}
+
+	txeBase64, err := transaction.Base64()
+	if err != nil {
+		err = errors.Wrap(err, "Unable to convert transaction object to base64 string")
+		return "", err
+	}
+	return txeBase64, nil
+}
+
 // SubmitTransactionXDR submits a transaction represented as a base64 XDR string to the network. err can be either error object or horizon.Error object.
 // See https://developers.stellar.org/api/resources/transactions/post/
 func (c *Client) SubmitTransactionXDR(transactionXdr string) (tx hProtocol.Transaction,
@@ -465,16 +507,8 @@ func (c *Client) SubmitFeeBumpTransaction(transaction *txnbuild.FeeBumpTransacti
 func (c *Client) SubmitFeeBumpTransactionWithOptions(transaction *txnbuild.FeeBumpTransaction, opts SubmitTxOpts) (tx hProtocol.Transaction, err error) {
 	// only check if memo is required if skip is false and the inner transaction
 	// doesn't have a memo.
-	if inner := transaction.InnerTransaction(); !opts.SkipMemoRequiredCheck && inner.Memo() == nil {
-		err = c.checkMemoRequired(inner)
-		if err != nil {
-			return
-		}
-	}
-
-	txeBase64, err := transaction.Base64()
+	txeBase64, err := c.validateFeeBumpTx(transaction, opts)
 	if err != nil {
-		err = errors.Wrap(err, "Unable to convert transaction object to base64 string")
 		return
 	}
 
@@ -501,20 +535,68 @@ func (c *Client) SubmitTransaction(transaction *txnbuild.Transaction) (tx hProto
 func (c *Client) SubmitTransactionWithOptions(transaction *txnbuild.Transaction, opts SubmitTxOpts) (tx hProtocol.Transaction, err error) {
 	// only check if memo is required if skip is false and the transaction
 	// doesn't have a memo.
-	if !opts.SkipMemoRequiredCheck && transaction.Memo() == nil {
-		err = c.checkMemoRequired(transaction)
-		if err != nil {
-			return
-		}
-	}
-
-	txeBase64, err := transaction.Base64()
+	txeBase64, err := c.validateTx(transaction, opts)
 	if err != nil {
-		err = errors.Wrap(err, "Unable to convert transaction object to base64 string")
 		return
 	}
 
 	return c.SubmitTransactionXDR(txeBase64)
+}
+
+// AsyncSubmitTransactionXDR submits a base64 XDR transaction using the transactions_async endpoint. err can be either error object or horizon.Error object.
+func (c *Client) AsyncSubmitTransactionXDR(transactionXdr string) (txResp hProtocol.AsyncTransactionSubmissionResponse,
+	err error) {
+	request := submitRequest{endpoint: "transactions_async", transactionXdr: transactionXdr}
+	err = c.sendRequest(request, &txResp)
+	return
+}
+
+// AsyncSubmitFeeBumpTransaction submits an async fee bump transaction to the network. err can be either an
+// error object or a horizon.Error object.
+//
+// This function will always check if the destination account requires a memo in the transaction as
+// defined in SEP0029: https://github.com/stellar/stellar-protocol/blob/master/ecosystem/sep-0029.md
+//
+// If you want to skip this check, use SubmitTransactionWithOptions.
+func (c *Client) AsyncSubmitFeeBumpTransaction(transaction *txnbuild.FeeBumpTransaction) (txResp hProtocol.AsyncTransactionSubmissionResponse, err error) {
+	return c.AsyncSubmitFeeBumpTransactionWithOptions(transaction, SubmitTxOpts{})
+}
+
+// AsyncSubmitFeeBumpTransactionWithOptions submits an async fee bump transaction to the network, allowing
+// you to pass SubmitTxOpts. err can be either an error object or a horizon.Error object.
+func (c *Client) AsyncSubmitFeeBumpTransactionWithOptions(transaction *txnbuild.FeeBumpTransaction, opts SubmitTxOpts) (txResp hProtocol.AsyncTransactionSubmissionResponse, err error) {
+	// only check if memo is required if skip is false and the inner transaction
+	// doesn't have a memo.
+	txeBase64, err := c.validateFeeBumpTx(transaction, opts)
+	if err != nil {
+		return
+	}
+
+	return c.AsyncSubmitTransactionXDR(txeBase64)
+}
+
+// AsyncSubmitTransaction submits an async transaction to the network. err can be either an
+// error object or a horizon.Error object.
+//
+// This function will always check if the destination account requires a memo in the transaction as
+// defined in SEP0029: https://github.com/stellar/stellar-protocol/blob/master/ecosystem/sep-0029.md
+//
+// If you want to skip this check, use SubmitTransactionWithOptions.
+func (c *Client) AsyncSubmitTransaction(transaction *txnbuild.Transaction) (txResp hProtocol.AsyncTransactionSubmissionResponse, err error) {
+	return c.AsyncSubmitTransactionWithOptions(transaction, SubmitTxOpts{})
+}
+
+// AsyncSubmitTransactionWithOptions submits an async transaction to the network, allowing
+// you to pass SubmitTxOpts. err can be either an error object or a horizon.Error object.
+func (c *Client) AsyncSubmitTransactionWithOptions(transaction *txnbuild.Transaction, opts SubmitTxOpts) (txResp hProtocol.AsyncTransactionSubmissionResponse, err error) {
+	// only check if memo is required if skip is false and the transaction
+	// doesn't have a memo.
+	txeBase64, err := c.validateTx(transaction, opts)
+	if err != nil {
+		return
+	}
+
+	return c.AsyncSubmitTransactionXDR(txeBase64)
 }
 
 // Transactions returns stellar transactions (https://developers.stellar.org/api/resources/transactions/list/)

@@ -15,63 +15,52 @@ import (
 )
 
 func TestShouldDiscardAsset(t *testing.T) {
-	testAsset := hProtocol.AssetStat{
-		Amount: "",
-	}
-
+	testAsset := hProtocol.AssetStat{}
 	assert.Equal(t, shouldDiscardAsset(testAsset, true), true)
 
-	testAsset = hProtocol.AssetStat{
-		Amount: "0.0",
-	}
+	testAsset = hProtocol.AssetStat{}
+	testAsset.Balances.Authorized = ""
 	assert.Equal(t, shouldDiscardAsset(testAsset, true), true)
 
-	testAsset = hProtocol.AssetStat{
-		Amount: "0",
-	}
+	testAsset = hProtocol.AssetStat{}
+	testAsset.Balances.Authorized = "0"
 	assert.Equal(t, shouldDiscardAsset(testAsset, true), true)
 
-	testAsset = hProtocol.AssetStat{
-		Amount:      "123901.0129310",
-		NumAccounts: 8,
-	}
+	testAsset = hProtocol.AssetStat{}
+	testAsset.Balances.Authorized = "12345.67"
+	testAsset.Accounts.Authorized = 0
 	assert.Equal(t, shouldDiscardAsset(testAsset, true), true)
 
-	testAsset = hProtocol.AssetStat{
-		Amount:      "123901.0129310",
-		NumAccounts: 12,
-	}
+	testAsset = hProtocol.AssetStat{}
+	testAsset.Balances.Authorized = "12345.67"
+	testAsset.Accounts.Authorized = 12
 	testAsset.Code = "REMOVE"
 	assert.Equal(t, shouldDiscardAsset(testAsset, true), true)
 
-	testAsset = hProtocol.AssetStat{
-		Amount:      "123901.0129310",
-		NumAccounts: 100,
-	}
+	testAsset = hProtocol.AssetStat{}
+	testAsset.Balances.Authorized = "12345.67"
+	testAsset.Accounts.Authorized = 100
 	testAsset.Code = "SOMETHINGVALID"
 	testAsset.Links.Toml.Href = ""
 	assert.Equal(t, shouldDiscardAsset(testAsset, true), false)
 
-	testAsset = hProtocol.AssetStat{
-		Amount:      "123901.0129310",
-		NumAccounts: 40,
-	}
+	testAsset = hProtocol.AssetStat{}
+	testAsset.Balances.Authorized = "12345.67"
+	testAsset.Accounts.Authorized = 40
 	testAsset.Code = "SOMETHINGVALID"
 	testAsset.Links.Toml.Href = "http://www.stellar.org/.well-known/stellar.toml"
 	assert.Equal(t, shouldDiscardAsset(testAsset, true), true)
 
-	testAsset = hProtocol.AssetStat{
-		Amount:      "123901.0129310",
-		NumAccounts: 40,
-	}
+	testAsset = hProtocol.AssetStat{}
+	testAsset.Balances.Authorized = "12345.67"
+	testAsset.Accounts.Authorized = 40
 	testAsset.Code = "SOMETHINGVALID"
 	testAsset.Links.Toml.Href = ""
 	assert.Equal(t, shouldDiscardAsset(testAsset, true), true)
 
-	testAsset = hProtocol.AssetStat{
-		Amount:      "123901.0129310",
-		NumAccounts: 40,
-	}
+	testAsset = hProtocol.AssetStat{}
+	testAsset.Balances.Authorized = "12345.67"
+	testAsset.Accounts.Authorized = 40
 	testAsset.Code = "SOMETHINGVALID"
 	testAsset.Links.Toml.Href = "https://www.stellar.org/.well-known/stellar.toml"
 	assert.Equal(t, shouldDiscardAsset(testAsset, true), false)
@@ -154,11 +143,10 @@ func TestProcessAsset_notCached(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `SIGNING_KEY="not cached signing key"`)
 	}))
-	asset := hProtocol.AssetStat{
-		Amount:      "123901.0129310",
-		NumAccounts: 100,
-	}
+	asset := hProtocol.AssetStat{}
 	asset.Code = "SOMETHINGVALID"
+	asset.Accounts.Authorized = 1
+	asset.Balances.Authorized = "123.4"
 	asset.Links.Toml.Href = server.URL
 	tomlCache := &TOMLCache{}
 	finalAsset, err := processAsset(logger, asset, tomlCache, true)
@@ -172,11 +160,10 @@ func TestProcessAsset_notCached(t *testing.T) {
 
 func TestProcessAsset_cached(t *testing.T) {
 	logger := log.DefaultLogger
-	asset := hProtocol.AssetStat{
-		Amount:      "123901.0129310",
-		NumAccounts: 100,
-	}
+	asset := hProtocol.AssetStat{}
 	asset.Code = "SOMETHINGVALID"
+	asset.Accounts.Authorized = 1
+	asset.Balances.Authorized = "123.4"
 	asset.Links.Toml.Href = "url"
 	tomlCache := &TOMLCache{}
 	tomlCache.Set("url", TOMLIssuer{SigningKey: "signing key"})

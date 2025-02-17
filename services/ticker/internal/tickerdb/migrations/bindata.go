@@ -446,18 +446,18 @@ type bintree struct {
 }
 
 var _bintree = &bintree{nil, map[string]*bintree{
-	"migrations": &bintree{nil, map[string]*bintree{
-		"20190404184050-initial.sql":                         &bintree{migrations20190404184050InitialSql, map[string]*bintree{}},
-		"20190405112544-increase_asset_code_size.sql":        &bintree{migrations20190405112544Increase_asset_code_sizeSql, map[string]*bintree{}},
-		"20190408115724-add_new_asset_fields.sql":            &bintree{migrations20190408115724Add_new_asset_fieldsSql, map[string]*bintree{}},
-		"20190408155841-add_issuers_table.sql":               &bintree{migrations20190408155841Add_issuers_tableSql, map[string]*bintree{}},
-		"20190409152216-add_trades_table.sql":                &bintree{migrations20190409152216Add_trades_tableSql, map[string]*bintree{}},
-		"20190409172610-rename_assets_desc_description.sql":  &bintree{migrations20190409172610Rename_assets_desc_descriptionSql, map[string]*bintree{}},
-		"20190410094830-add_assets_issuer_account_field.sql": &bintree{migrations20190410094830Add_assets_issuer_account_fieldSql, map[string]*bintree{}},
-		"20190411165735-data_seed_and_indices.sql":           &bintree{migrations20190411165735Data_seed_and_indicesSql, map[string]*bintree{}},
-		"20190425110313-add_orderbook_stats.sql":             &bintree{migrations20190425110313Add_orderbook_statsSql, map[string]*bintree{}},
-		"20190426092321-add_aggregated_orderbook_view.sql":   &bintree{migrations20190426092321Add_aggregated_orderbook_viewSql, map[string]*bintree{}},
-		"20220909100700-trades_pk_to_bigint.sql":             &bintree{migrations20220909100700Trades_pk_to_bigintSql, map[string]*bintree{}},
+	"migrations": {nil, map[string]*bintree{
+		"20190404184050-initial.sql":                         {migrations20190404184050InitialSql, map[string]*bintree{}},
+		"20190405112544-increase_asset_code_size.sql":        {migrations20190405112544Increase_asset_code_sizeSql, map[string]*bintree{}},
+		"20190408115724-add_new_asset_fields.sql":            {migrations20190408115724Add_new_asset_fieldsSql, map[string]*bintree{}},
+		"20190408155841-add_issuers_table.sql":               {migrations20190408155841Add_issuers_tableSql, map[string]*bintree{}},
+		"20190409152216-add_trades_table.sql":                {migrations20190409152216Add_trades_tableSql, map[string]*bintree{}},
+		"20190409172610-rename_assets_desc_description.sql":  {migrations20190409172610Rename_assets_desc_descriptionSql, map[string]*bintree{}},
+		"20190410094830-add_assets_issuer_account_field.sql": {migrations20190410094830Add_assets_issuer_account_fieldSql, map[string]*bintree{}},
+		"20190411165735-data_seed_and_indices.sql":           {migrations20190411165735Data_seed_and_indicesSql, map[string]*bintree{}},
+		"20190425110313-add_orderbook_stats.sql":             {migrations20190425110313Add_orderbook_statsSql, map[string]*bintree{}},
+		"20190426092321-add_aggregated_orderbook_view.sql":   {migrations20190426092321Add_aggregated_orderbook_viewSql, map[string]*bintree{}},
+		"20220909100700-trades_pk_to_bigint.sql":             {migrations20220909100700Trades_pk_to_bigintSql, map[string]*bintree{}},
 	}},
 }}
 

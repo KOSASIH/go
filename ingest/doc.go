@@ -8,8 +8,7 @@ possible features. This is why this package was created.
 # Ledger Backend
 
 Ledger backends are sources of information about Stellar network ledgers. This
-can be, for example: a Stellar-Core database, (possibly-remote) Captive
-Stellar-Core instances, or History Archives. Please consult the "ledgerbackend"
+can be, for example: Captive Stellar-Core instances. Please consult the "ledgerbackend"
 package docs for more information about each backend.
 
 Warning: Ledger backends provide low-level xdr.LedgerCloseMeta that should not

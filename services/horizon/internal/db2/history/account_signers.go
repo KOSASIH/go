@@ -53,6 +53,9 @@ func (q *Q) AccountsForSigner(ctx context.Context, signer string, page db2.PageQ
 // CreateAccountSigner creates a row in the accounts_signers table.
 // Returns number of rows affected and error.
 func (q *Q) CreateAccountSigner(ctx context.Context, account, signer string, weight int32, sponsor *string) (int64, error) {
+	// This function is not used in the ingestion code path. SignersProcessor now uses bulk insertion with
+	// FastBatchInsertBuilder, but this function is used in unit tests when only a single row needs to be inserted.
+
 	sql := sq.Insert("accounts_signers").
 		Columns("account_id", "signer", "weight", "sponsor").
 		Values(account, signer, weight, sponsor)
@@ -65,12 +68,12 @@ func (q *Q) CreateAccountSigner(ctx context.Context, account, signer string, wei
 	return result.RowsAffected()
 }
 
-// RemoveAccountSigner deletes a row in the accounts_signers table.
+// RemoveAccountSigners deletes rows in the accounts_signers table.
 // Returns number of rows affected and error.
-func (q *Q) RemoveAccountSigner(ctx context.Context, account, signer string) (int64, error) {
+func (q *Q) RemoveAccountSigners(ctx context.Context, account string, signers []string) (int64, error) {
 	sql := sq.Delete("accounts_signers").Where(sq.Eq{
 		"account_id": account,
-		"signer":     signer,
+		"signer":     signers,
 	})
 
 	result, err := q.Exec(ctx, sql)

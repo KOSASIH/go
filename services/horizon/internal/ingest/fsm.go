@@ -8,11 +8,12 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/stellar/go/historyarchive"
 	"github.com/stellar/go/ingest"
 	"github.com/stellar/go/ingest/ledgerbackend"
+	"github.com/stellar/go/services/horizon/internal/db2/history"
 	"github.com/stellar/go/support/errors"
 	logpkg "github.com/stellar/go/support/log"
-	"github.com/stellar/go/toid"
 	"github.com/stellar/go/xdr"
 )
 
@@ -30,9 +31,51 @@ func (e ErrReingestRangeConflict) Error() string {
 	return fmt.Sprintf("reingest range overlaps with horizon ingestion, supplied range shouldn't contain ledger %d", e.maximumLedgerSequence)
 }
 
+type State int
+
+const (
+	None State = iota
+	Start
+	Stop
+	Build
+	Resume
+	WaitForCheckpoint
+	StressTest
+	VerifyRange
+	HistoryRange
+	ReingestHistoryRange
+)
+
+// provide a name represention for a state
+func (state State) Name() string {
+	switch state {
+	case Start:
+		return "start"
+	case Stop:
+		return "stop"
+	case Build:
+		return "build"
+	case Resume:
+		return "resume"
+	case WaitForCheckpoint:
+		return "waitforcheckpoint"
+	case StressTest:
+		return "stresstest"
+	case VerifyRange:
+		return "verifyrange"
+	case HistoryRange:
+		return "historyrange"
+	case ReingestHistoryRange:
+		return "reingesthistoryrange"
+	default:
+		return "none"
+	}
+}
+
 type stateMachineNode interface {
 	run(*system) (transition, error)
 	String() string
+	GetState() State
 }
 
 type transition struct {
@@ -105,6 +148,10 @@ func (stopState) String() string {
 	return "stop"
 }
 
+func (stopState) GetState() State {
+	return Stop
+}
+
 func (stopState) run(s *system) (transition, error) {
 	return stop(), errors.New("Cannot run terminal state")
 }
@@ -117,8 +164,12 @@ func (startState) String() string {
 	return "start"
 }
 
+func (startState) GetState() State {
+	return Start
+}
+
 func (state startState) run(s *system) (transition, error) {
-	if err := s.historyQ.Begin(); err != nil {
+	if err := s.historyQ.Begin(s.ctx); err != nil {
 		return start(), errors.Wrap(err, "Error starting a transaction")
 	}
 	defer s.historyQ.Rollback()
@@ -234,6 +285,10 @@ func (b buildState) String() string {
 	return fmt.Sprintf("buildFromCheckpoint(checkpointLedger=%d, skipChecks=%t)", b.checkpointLedger, b.skipChecks)
 }
 
+func (buildState) GetState() State {
+	return Build
+}
+
 func (b buildState) run(s *system) (transition, error) {
 	var nextFailState = start()
 	if b.stop {
@@ -244,16 +299,11 @@ func (b buildState) run(s *system) (transition, error) {
 		return nextFailState, errors.New("unexpected checkpointLedger value")
 	}
 
-	// We don't need to prepare range for genesis checkpoint because we don't
-	// perform protocol version and bucket list hash checks.
-	// In the long term we should probably create artificial xdr.LedgerCloseMeta
-	// for ledger #1 instead of using `ingest.GenesisChange` reader in
-	// ProcessorRunner.RunHistoryArchiveIngestion().
-	// We can also skip preparing range if `skipChecks` is `true` because we
+	// We can skip preparing range if `skipChecks` is `true` because we
 	// won't need bucket list hash and protocol version.
 	var protocolVersion uint32
 	var bucketListHash xdr.Hash
-	if b.checkpointLedger != 1 && !b.skipChecks {
+	if !b.skipChecks {
 		err := s.maybePrepareRange(s.ctx, b.checkpointLedger)
 		if err != nil {
 			return nextFailState, err
@@ -274,7 +324,7 @@ func (b buildState) run(s *system) (transition, error) {
 		bucketListHash = ledgerCloseMeta.BucketListHash()
 	}
 
-	if err := s.historyQ.Begin(); err != nil {
+	if err := s.historyQ.Begin(s.ctx); err != nil {
 		return nextFailState, errors.Wrap(err, "Error starting a transaction")
 	}
 	defer s.historyQ.Rollback()
@@ -297,11 +347,6 @@ func (b buildState) run(s *system) (transition, error) {
 	if ingestVersion == CurrentVersion && lastIngestedLedger > 0 {
 		log.Info("Another instance completed `buildState`. Skipping...")
 		return nextFailState, nil
-	}
-
-	if err = s.updateCursor(b.checkpointLedger - 1); err != nil {
-		// Don't return updateCursor error.
-		log.WithError(err).Warn("error updating stellar-core cursor")
 	}
 
 	log.Info("Starting ingestion system from empty state...")
@@ -331,16 +376,13 @@ func (b buildState) run(s *system) (transition, error) {
 	startTime := time.Now()
 
 	var stats ingest.StatsChangeProcessorResults
-	if b.checkpointLedger == 1 {
-		stats, err = s.runner.RunGenesisStateIngestion()
-	} else {
-		stats, err = s.runner.RunHistoryArchiveIngestion(
-			b.checkpointLedger,
-			b.skipChecks,
-			protocolVersion,
-			bucketListHash,
-		)
-	}
+
+	stats, err = s.runner.RunHistoryArchiveIngestion(
+		b.checkpointLedger,
+		b.skipChecks,
+		protocolVersion,
+		bucketListHash,
+	)
 
 	if err != nil {
 		return nextFailState, errors.Wrap(err, "Error ingesting history archive")
@@ -377,6 +419,10 @@ func (r resumeState) String() string {
 	return fmt.Sprintf("resume(latestSuccessfullyProcessedLedger=%d)", r.latestSuccessfullyProcessedLedger)
 }
 
+func (resumeState) GetState() State {
+	return Resume
+}
+
 func (r resumeState) run(s *system) (transition, error) {
 	if r.latestSuccessfullyProcessedLedger == 0 {
 		return start(), errors.New("unexpected latestSuccessfullyProcessedLedger value")
@@ -403,9 +449,7 @@ func (r resumeState) run(s *system) (transition, error) {
 		"duration": duration,
 	}).Info("Ledger returned from the backend")
 
-	s.Metrics().LedgerFetchDurationSummary.Observe(float64(duration))
-
-	if err = s.historyQ.Begin(); err != nil {
+	if err = s.historyQ.Begin(s.ctx); err != nil {
 		return retryResume(r),
 			errors.Wrap(err, "Error starting a transaction")
 	}
@@ -424,15 +468,6 @@ func (r resumeState) run(s *system) (transition, error) {
 		log.WithField("ingestLedger", ingestLedger).
 			WithField("lastIngestedLedger", lastIngestedLedger).
 			Info("bumping ingest ledger to next ledger after ingested ledger in db")
-
-		// Update cursor if there's more than one ingesting instance: either
-		// Captive-Core or DB ingestion connected to another Stellar-Core.
-		if err = s.updateCursor(lastIngestedLedger); err != nil {
-			// Don't return updateCursor error.
-			log.WithError(err).Warn("error updating stellar-core cursor")
-		}
-
-		s.maybeVerifyState(ingestLedger)
 
 		// resume immediately so Captive-Core catchup is not slowed down
 		return resumeImmediately(lastIngestedLedger), nil
@@ -483,9 +518,9 @@ func (r resumeState) run(s *system) (transition, error) {
 	}
 
 	rebuildStart := time.Now()
-	err = s.historyQ.RebuildTradeAggregationBuckets(s.ctx, ingestLedger, ingestLedger, s.config.RoundingSlippageFilter)
+	err = s.RebuildTradeAggregationBuckets(ingestLedger, ingestLedger)
 	if err != nil {
-		return stop(), errors.Wrap(err, "error rebuilding trade aggregations")
+		return retryResume(r), errors.Wrap(err, "error rebuilding trade aggregations")
 	}
 	rebuildDuration := time.Since(rebuildStart).Seconds()
 	s.Metrics().LedgerIngestionTradeAggregationDuration.Observe(float64(rebuildDuration))
@@ -493,14 +528,6 @@ func (r resumeState) run(s *system) (transition, error) {
 	if err = s.completeIngestion(s.ctx, ingestLedger); err != nil {
 		return retryResume(r), err
 	}
-
-	if err = s.updateCursor(ingestLedger); err != nil {
-		// Don't return updateCursor error.
-		log.WithError(err).Warn("error updating stellar-core cursor")
-	}
-
-	duration = time.Since(startTime).Seconds()
-	s.Metrics().LedgerIngestionDuration.Observe(float64(duration))
 
 	// Update stats metrics
 	changeStatsMap := stats.changeStats.Map()
@@ -512,6 +539,22 @@ func (r resumeState) run(s *system) (transition, error) {
 	tradeStatsMap := stats.tradeStats.Map()
 	r.addLedgerStatsMetricFromMap(s, "trades", tradeStatsMap)
 	r.addProcessorDurationsMetricFromMap(s, stats.transactionDurations)
+	r.addLoaderDurationsMetricFromMap(s, stats.loaderDurations)
+	r.addLoaderStatsMetric(s, stats.loaderStats)
+
+	// since a single system instance is shared throughout all states,
+	// this will sweep up increments to history archive counters
+	// done elsewhere such as verifyState invocations since the same system
+	// instance is passed there and the additional usages of archives will just
+	// roll up and be reported here as part of resumeState transition
+	addHistoryArchiveStatsMetrics(s, s.historyAdapter.GetStats())
+
+	s.maybeVerifyState(ingestLedger, ledgerCloseMeta.BucketListHash())
+	s.maybeReapHistory(ingestLedger)
+	s.maybeReapLookupTables(ingestLedger)
+
+	duration = time.Since(startTime).Seconds()
+	s.Metrics().LedgerIngestionDuration.Observe(float64(duration))
 
 	localLog := log.WithFields(logpkg.F{
 		"sequence": ingestLedger,
@@ -530,9 +573,6 @@ func (r resumeState) run(s *system) (transition, error) {
 
 	localLog.Info("Processed ledger")
 
-	s.maybeVerifyState(ingestLedger)
-	s.maybeReapLookupTables(ingestLedger)
-
 	return resumeImmediately(ingestLedger), nil
 }
 
@@ -546,8 +586,6 @@ func (r resumeState) addLedgerStatsMetricFromMap(s *system, prefix string, m map
 
 func (r resumeState) addProcessorDurationsMetricFromMap(s *system, m map[string]time.Duration) {
 	for processorName, value := range m {
-		// * is not accepted in Prometheus labels
-		processorName = strings.Replace(processorName, "*", "", -1)
 		s.Metrics().ProcessorsRunDuration.
 			With(prometheus.Labels{"name": processorName}).Add(value.Seconds())
 		s.Metrics().ProcessorsRunDurationSummary.
@@ -555,284 +593,68 @@ func (r resumeState) addProcessorDurationsMetricFromMap(s *system, m map[string]
 	}
 }
 
-type historyRangeState struct {
-	fromLedger uint32
-	toLedger   uint32
+func (r resumeState) addLoaderDurationsMetricFromMap(s *system, m map[string]time.Duration) {
+	for loaderName, value := range m {
+		s.Metrics().LoadersRunDurationSummary.
+			With(prometheus.Labels{"name": loaderName}).Observe(value.Seconds())
+	}
 }
 
-func (h historyRangeState) String() string {
-	return fmt.Sprintf(
-		"historyRange(fromLedger=%d, toLedger=%d)",
-		h.fromLedger,
-		h.toLedger,
-	)
+func (r resumeState) addLoaderStatsMetric(s *system, loaderSTats map[string]history.LoaderStats) {
+	for loaderName, stats := range loaderSTats {
+		s.Metrics().LoadersStatsSummary.
+			With(prometheus.Labels{
+				"name": loaderName,
+				"stat": "total_queried",
+			}).
+			Observe(float64(stats.Total))
+		s.Metrics().LoadersStatsSummary.
+			With(prometheus.Labels{
+				"name": loaderName,
+				"stat": "total_inserted",
+			}).
+			Observe(float64(stats.Inserted))
+	}
 }
 
-// historyRangeState is used when catching up history data
-func (h historyRangeState) run(s *system) (transition, error) {
-	if h.fromLedger == 0 || h.toLedger == 0 ||
-		h.fromLedger > h.toLedger {
-		return start(), errors.Errorf("invalid range: [%d, %d]", h.fromLedger, h.toLedger)
+func addHistoryArchiveStatsMetrics(s *system, stats []historyarchive.ArchiveStats) {
+	for _, historyServerStat := range stats {
+		s.Metrics().HistoryArchiveStatsCounter.
+			With(prometheus.Labels{
+				"source": historyServerStat.GetBackendName(),
+				"type":   "file_downloads"}).
+			Add(float64(historyServerStat.GetDownloads()))
+		s.Metrics().HistoryArchiveStatsCounter.
+			With(prometheus.Labels{
+				"source": historyServerStat.GetBackendName(),
+				"type":   "file_uploads"}).
+			Add(float64(historyServerStat.GetUploads()))
+		s.Metrics().HistoryArchiveStatsCounter.
+			With(prometheus.Labels{
+				"source": historyServerStat.GetBackendName(),
+				"type":   "requests"}).
+			Add(float64(historyServerStat.GetRequests()))
+		s.Metrics().HistoryArchiveStatsCounter.
+			With(prometheus.Labels{
+				"source": historyServerStat.GetBackendName(),
+				"type":   "cache_hits"}).
+			Add(float64(historyServerStat.GetCacheHits()))
+		s.Metrics().HistoryArchiveStatsCounter.
+			With(prometheus.Labels{
+				"source": historyServerStat.GetBackendName(),
+				"type":   "cache_bandwidth"}).
+			Add(float64(historyServerStat.GetCacheBandwidth()))
 	}
-
-	err := s.maybePrepareRange(s.ctx, h.fromLedger)
-	if err != nil {
-		return start(), err
-	}
-
-	if err = s.historyQ.Begin(); err != nil {
-		return start(), errors.Wrap(err, "Error starting a transaction")
-	}
-	defer s.historyQ.Rollback()
-
-	// acquire distributed lock so no one else can perform ingestion operations.
-	if _, err = s.historyQ.GetLastLedgerIngest(s.ctx); err != nil {
-		return start(), errors.Wrap(err, getLastIngestedErrMsg)
-	}
-
-	lastHistoryLedger, err := s.historyQ.GetLatestHistoryLedger(s.ctx)
-	if err != nil {
-		return start(), errors.Wrap(err, "could not get latest history ledger")
-	}
-
-	// We should be ingesting the ledger which occurs after
-	// lastHistoryLedger. Otherwise, some other horizon node has
-	// already completed the ingest history range operation and
-	// we should go back to the init state
-	if lastHistoryLedger != h.fromLedger-1 {
-		return start(), nil
-	}
-
-	for cur := h.fromLedger; cur <= h.toLedger; cur++ {
-		var ledgerCloseMeta xdr.LedgerCloseMeta
-
-		log.WithField("sequence", cur).Info("Waiting for ledger to be available in the backend...")
-		startTime := time.Now()
-
-		ledgerCloseMeta, err = s.ledgerBackend.GetLedger(s.ctx, cur)
-		if err != nil {
-			// Commit finished work in case of ledger backend error.
-			commitErr := s.historyQ.Commit()
-			if commitErr != nil {
-				log.WithError(commitErr).Error("Error committing partial range results")
-			} else {
-				log.Info("Committed partial range results")
-			}
-			return start(), errors.Wrap(err, "error getting ledger")
-		}
-
-		log.WithFields(logpkg.F{
-			"sequence": cur,
-			"duration": time.Since(startTime).Seconds(),
-		}).Info("Ledger returned from the backend")
-
-		if err = runTransactionProcessorsOnLedger(s, ledgerCloseMeta); err != nil {
-			return start(), err
-		}
-	}
-
-	if err = s.historyQ.Commit(); err != nil {
-		return start(), errors.Wrap(err, commitErrMsg)
-	}
-
-	return start(), nil
-}
-
-func runTransactionProcessorsOnLedger(s *system, ledger xdr.LedgerCloseMeta) error {
-	log.WithFields(logpkg.F{
-		"sequence": ledger.LedgerSequence(),
-		"state":    false,
-		"ledger":   true,
-		"commit":   false,
-	}).Info("Processing ledger")
-	startTime := time.Now()
-
-	ledgerTransactionStats, _, tradeStats, err := s.runner.RunTransactionProcessorsOnLedger(ledger)
-	if err != nil {
-		return errors.Wrap(err, fmt.Sprintf("error processing ledger sequence=%d", ledger.LedgerSequence()))
-	}
-
-	log.
-		WithFields(ledgerTransactionStats.Map()).
-		WithFields(tradeStats.Map()).
-		WithFields(logpkg.F{
-			"sequence": ledger.LedgerSequence(),
-			"duration": time.Since(startTime).Seconds(),
-			"state":    false,
-			"ledger":   true,
-			"commit":   false,
-		}).
-		Info("Processed ledger")
-	return nil
-}
-
-type reingestHistoryRangeState struct {
-	fromLedger uint32
-	toLedger   uint32
-	force      bool
-}
-
-func (h reingestHistoryRangeState) String() string {
-	return fmt.Sprintf(
-		"reingestHistoryRange(fromLedger=%d, toLedger=%d, force=%t)",
-		h.fromLedger,
-		h.toLedger,
-		h.force,
-	)
-}
-
-func (h reingestHistoryRangeState) ingestRange(s *system, fromLedger, toLedger uint32) error {
-	if s.historyQ.GetTx() == nil {
-		return errors.New("expected transaction to be present")
-	}
-
-	// Clear history data before ingesting - used in `reingest range` command.
-	start, end, err := toid.LedgerRangeInclusive(
-		int32(fromLedger),
-		int32(toLedger),
-	)
-	if err != nil {
-		return errors.Wrap(err, "Invalid range")
-	}
-
-	err = s.historyQ.DeleteRangeAll(s.ctx, start, end)
-	if err != nil {
-		return errors.Wrap(err, "error in DeleteRangeAll")
-	}
-
-	for cur := fromLedger; cur <= toLedger; cur++ {
-		var ledgerCloseMeta xdr.LedgerCloseMeta
-		ledgerCloseMeta, err = s.ledgerBackend.GetLedger(s.ctx, cur)
-		if err != nil {
-			return errors.Wrap(err, "error getting ledger")
-		}
-
-		if err = runTransactionProcessorsOnLedger(s, ledgerCloseMeta); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-func (h reingestHistoryRangeState) prepareRange(s *system) (transition, error) {
-	log.WithFields(logpkg.F{
-		"from": h.fromLedger,
-		"to":   h.toLedger,
-	}).Info("Preparing ledger backend to retrieve range")
-	startTime := time.Now()
-
-	err := s.ledgerBackend.PrepareRange(s.ctx, ledgerbackend.BoundedRange(h.fromLedger, h.toLedger))
-	if err != nil {
-		return stop(), errors.Wrap(err, "error preparing range")
-	}
-
-	log.WithFields(logpkg.F{
-		"from":     h.fromLedger,
-		"to":       h.toLedger,
-		"duration": time.Since(startTime).Seconds(),
-	}).Info("Range ready")
-
-	return transition{}, nil
-}
-
-// reingestHistoryRangeState is used as a command to reingest historical data
-func (h reingestHistoryRangeState) run(s *system) (transition, error) {
-	if h.fromLedger == 0 || h.toLedger == 0 ||
-		h.fromLedger > h.toLedger {
-		return stop(), errors.Errorf("invalid range: [%d, %d]", h.fromLedger, h.toLedger)
-	}
-
-	if h.fromLedger == 1 {
-		log.Warn("Ledger 1 is pregenerated and not available, starting from ledger 2.")
-		h.fromLedger = 2
-	}
-
-	var startTime time.Time
-
-	if h.force {
-		if t, err := h.prepareRange(s); err != nil {
-			return t, err
-		}
-		startTime = time.Now()
-
-		if err := s.historyQ.Begin(); err != nil {
-			return stop(), errors.Wrap(err, "Error starting a transaction")
-		}
-		defer s.historyQ.Rollback()
-
-		// acquire distributed lock so no one else can perform ingestion operations.
-		if _, err := s.historyQ.GetLastLedgerIngest(s.ctx); err != nil {
-			return stop(), errors.Wrap(err, getLastIngestedErrMsg)
-		}
-
-		if err := h.ingestRange(s, h.fromLedger, h.toLedger); err != nil {
-			return stop(), err
-		}
-
-		if err := s.historyQ.Commit(); err != nil {
-			return stop(), errors.Wrap(err, commitErrMsg)
-		}
-	} else {
-		lastIngestedLedger, err := s.historyQ.GetLastLedgerIngestNonBlocking(s.ctx)
-		if err != nil {
-			return stop(), errors.Wrap(err, getLastIngestedErrMsg)
-		}
-
-		if lastIngestedLedger > 0 && h.toLedger >= lastIngestedLedger {
-			return stop(), ErrReingestRangeConflict{lastIngestedLedger}
-		}
-
-		// Only prepare the range after checking the bounds to enable an early error return
-		var t transition
-		if t, err = h.prepareRange(s); err != nil {
-			return t, err
-		}
-		startTime = time.Now()
-
-		for cur := h.fromLedger; cur <= h.toLedger; cur++ {
-			err = func(ledger uint32) error {
-				if e := s.historyQ.Begin(); e != nil {
-					return errors.Wrap(e, "Error starting a transaction")
-				}
-				defer s.historyQ.Rollback()
-
-				// ingest each ledger in a separate transaction to prevent deadlocks
-				// when acquiring ShareLocks from multiple parallel reingest range processes
-				if e := h.ingestRange(s, ledger, ledger); e != nil {
-					return e
-				}
-
-				if e := s.historyQ.Commit(); e != nil {
-					return errors.Wrap(e, commitErrMsg)
-				}
-
-				return nil
-			}(cur)
-			if err != nil {
-				return stop(), err
-			}
-		}
-	}
-
-	err := s.historyQ.RebuildTradeAggregationBuckets(s.ctx, h.fromLedger, h.toLedger, s.config.RoundingSlippageFilter)
-	if err != nil {
-		return stop(), errors.Wrap(err, "Error rebuilding trade aggregations")
-	}
-
-	log.WithFields(logpkg.F{
-		"from":     h.fromLedger,
-		"to":       h.toLedger,
-		"duration": time.Since(startTime).Seconds(),
-	}).Info("Reingestion done")
-
-	return stop(), nil
 }
 
 type waitForCheckpointState struct{}
 
 func (waitForCheckpointState) String() string {
 	return "waitForCheckpoint"
+}
+
+func (waitForCheckpointState) GetState() State {
+	return WaitForCheckpoint
 }
 
 func (waitForCheckpointState) run(*system) (transition, error) {
@@ -856,13 +678,17 @@ func (v verifyRangeState) String() string {
 	)
 }
 
+func (verifyRangeState) GetState() State {
+	return VerifyRange
+}
+
 func (v verifyRangeState) run(s *system) (transition, error) {
 	if v.fromLedger == 0 || v.toLedger == 0 ||
 		v.fromLedger > v.toLedger {
 		return stop(), errors.Errorf("invalid range: [%d, %d]", v.fromLedger, v.toLedger)
 	}
 
-	if err := s.historyQ.Begin(); err != nil {
+	if err := s.historyQ.Begin(s.ctx); err != nil {
 		err = errors.Wrap(err, "Error starting a transaction")
 		return stop(), err
 	}
@@ -933,12 +759,11 @@ func (v verifyRangeState) run(s *system) (transition, error) {
 		}).Info("Processing ledger")
 		startTime := time.Now()
 
-		if err = s.historyQ.Begin(); err != nil {
+		if err = s.historyQ.Begin(s.ctx); err != nil {
 			err = errors.Wrap(err, "Error starting a transaction")
 			return stop(), err
 		}
 
-		var ledgerCloseMeta xdr.LedgerCloseMeta
 		ledgerCloseMeta, err = s.ledgerBackend.GetLedger(s.ctx, sequence)
 		if err != nil {
 			return stop(), errors.Wrap(err, "error getting ledger")
@@ -969,13 +794,17 @@ func (v verifyRangeState) run(s *system) (transition, error) {
 			Info("Processed ledger")
 	}
 
-	err = s.historyQ.RebuildTradeAggregationBuckets(s.ctx, v.fromLedger, v.toLedger, s.config.RoundingSlippageFilter)
+	err = s.RebuildTradeAggregationBuckets(v.fromLedger, v.toLedger)
 	if err != nil {
 		return stop(), errors.Wrap(err, "error rebuilding trade aggregations")
 	}
 
 	if v.verifyState {
-		err = s.verifyState(false)
+		err = s.verifyState(
+			false,
+			ledgerCloseMeta.LedgerSequence(),
+			ledgerCloseMeta.BucketListHash(),
+		)
 	}
 
 	return stop(), err
@@ -987,8 +816,12 @@ func (stressTestState) String() string {
 	return "stressTest"
 }
 
+func (stressTestState) GetState() State {
+	return StressTest
+}
+
 func (stressTestState) run(s *system) (transition, error) {
-	if err := s.historyQ.Begin(); err != nil {
+	if err := s.historyQ.Begin(s.ctx); err != nil {
 		err = errors.Wrap(err, "Error starting a transaction")
 		return stop(), err
 	}

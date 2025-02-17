@@ -55,13 +55,8 @@ func (aid *AccountId) Equals(other AccountId) bool {
 }
 
 // LedgerKey implements the `Keyer` interface
-func (aid *AccountId) LedgerKey() (ret LedgerKey) {
-	err := ret.SetAccount(*aid)
-	if err != nil {
-		panic(err)
-	}
-
-	return
+func (aid *AccountId) LedgerKey() (key LedgerKey, err error) {
+	return key, key.SetAccount(*aid)
 }
 
 func (e *EncodingBuffer) accountIdCompressEncodeTo(aid AccountId) error {

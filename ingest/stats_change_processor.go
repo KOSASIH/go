@@ -2,6 +2,7 @@ package ingest
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/stellar/go/xdr"
 )
@@ -37,6 +38,22 @@ type StatsChangeProcessorResults struct {
 	LiquidityPoolsCreated int64
 	LiquidityPoolsUpdated int64
 	LiquidityPoolsRemoved int64
+
+	ContractDataCreated int64
+	ContractDataUpdated int64
+	ContractDataRemoved int64
+
+	ContractCodeCreated int64
+	ContractCodeUpdated int64
+	ContractCodeRemoved int64
+
+	ConfigSettingsCreated int64
+	ConfigSettingsUpdated int64
+	ConfigSettingsRemoved int64
+
+	TtlCreated int64
+	TtlUpdated int64
+	TtlRemoved int64
 }
 
 func (p *StatsChangeProcessor) ProcessChange(ctx context.Context, change Change) error {
@@ -95,6 +112,44 @@ func (p *StatsChangeProcessor) ProcessChange(ctx context.Context, change Change)
 		case xdr.LedgerEntryChangeTypeLedgerEntryRemoved:
 			p.results.LiquidityPoolsRemoved++
 		}
+	case xdr.LedgerEntryTypeContractData:
+		switch change.LedgerEntryChangeType() {
+		case xdr.LedgerEntryChangeTypeLedgerEntryCreated:
+			p.results.ContractDataCreated++
+		case xdr.LedgerEntryChangeTypeLedgerEntryUpdated:
+			p.results.ContractDataUpdated++
+		case xdr.LedgerEntryChangeTypeLedgerEntryRemoved:
+			p.results.ContractDataRemoved++
+		}
+	case xdr.LedgerEntryTypeContractCode:
+		switch change.LedgerEntryChangeType() {
+		case xdr.LedgerEntryChangeTypeLedgerEntryCreated:
+			p.results.ContractCodeCreated++
+		case xdr.LedgerEntryChangeTypeLedgerEntryUpdated:
+			p.results.ContractCodeUpdated++
+		case xdr.LedgerEntryChangeTypeLedgerEntryRemoved:
+			p.results.ContractCodeRemoved++
+		}
+	case xdr.LedgerEntryTypeConfigSetting:
+		switch change.LedgerEntryChangeType() {
+		case xdr.LedgerEntryChangeTypeLedgerEntryCreated:
+			p.results.ConfigSettingsCreated++
+		case xdr.LedgerEntryChangeTypeLedgerEntryUpdated:
+			p.results.ConfigSettingsUpdated++
+		case xdr.LedgerEntryChangeTypeLedgerEntryRemoved:
+			p.results.ConfigSettingsRemoved++
+		}
+	case xdr.LedgerEntryTypeTtl:
+		switch change.LedgerEntryChangeType() {
+		case xdr.LedgerEntryChangeTypeLedgerEntryCreated:
+			p.results.TtlCreated++
+		case xdr.LedgerEntryChangeTypeLedgerEntryUpdated:
+			p.results.TtlUpdated++
+		case xdr.LedgerEntryChangeTypeLedgerEntryRemoved:
+			p.results.TtlRemoved++
+		}
+	default:
+		return fmt.Errorf("unsupported ledger entry type: %s", change.Type.String())
 	}
 
 	return nil
@@ -129,5 +184,21 @@ func (stats *StatsChangeProcessorResults) Map() map[string]interface{} {
 		"stats_liquidity_pools_created": stats.LiquidityPoolsCreated,
 		"stats_liquidity_pools_updated": stats.LiquidityPoolsUpdated,
 		"stats_liquidity_pools_removed": stats.LiquidityPoolsRemoved,
+
+		"stats_contract_data_created": stats.ContractDataCreated,
+		"stats_contract_data_updated": stats.ContractDataUpdated,
+		"stats_contract_data_removed": stats.ContractDataRemoved,
+
+		"stats_contract_code_created": stats.ContractCodeCreated,
+		"stats_contract_code_updated": stats.ContractCodeUpdated,
+		"stats_contract_code_removed": stats.ContractCodeRemoved,
+
+		"stats_config_settings_created": stats.ConfigSettingsCreated,
+		"stats_config_settings_updated": stats.ConfigSettingsUpdated,
+		"stats_config_settings_removed": stats.ConfigSettingsRemoved,
+
+		"stats_ttl_created": stats.TtlCreated,
+		"stats_ttl_updated": stats.TtlUpdated,
+		"stats_ttl_removed": stats.TtlRemoved,
 	}
 }

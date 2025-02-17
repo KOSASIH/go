@@ -65,7 +65,7 @@ func createFWFixtures(t *testing.T) (*mockHash, *stellarCoreRunner, *fileWatcher
 		Context:            context.Background(),
 		Toml:               captiveCoreToml,
 		StoragePath:        storagePath,
-	})
+	}, nil)
 
 	fw, err := newFileWatcherWithOptions(runner, ms.hashFile, time.Millisecond)
 	assert.NoError(t, err)
@@ -96,7 +96,7 @@ func TestNewFileWatcherError(t *testing.T) {
 		Context:            context.Background(),
 		Toml:               captiveCoreToml,
 		StoragePath:        storagePath,
-	})
+	}, nil)
 
 	_, err = newFileWatcherWithOptions(runner, ms.hashFile, time.Millisecond)
 	assert.EqualError(t, err, "could not hash captive core binary: test error")

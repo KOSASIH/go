@@ -21,50 +21,47 @@ import (
 // TransactionBatchInsertBuilder is used to insert transactions into the
 // history_transactions table
 type TransactionBatchInsertBuilder interface {
-	Add(ctx context.Context, transaction ingest.LedgerTransaction, sequence uint32) error
-	Exec(ctx context.Context) error
+	Add(transaction ingest.LedgerTransaction, sequence uint32) error
+	Exec(ctx context.Context, session db.SessionInterface) error
 }
 
 // transactionBatchInsertBuilder is a simple wrapper around db.BatchInsertBuilder
 type transactionBatchInsertBuilder struct {
 	encodingBuffer *xdr.EncodingBuffer
-	builder        db.BatchInsertBuilder
+	table          string
+	builder        db.FastBatchInsertBuilder
 }
 
 // NewTransactionBatchInsertBuilder constructs a new TransactionBatchInsertBuilder instance
-func (q *Q) NewTransactionBatchInsertBuilder(maxBatchSize int) TransactionBatchInsertBuilder {
+func (q *Q) NewTransactionBatchInsertBuilder() TransactionBatchInsertBuilder {
 	return &transactionBatchInsertBuilder{
 		encodingBuffer: xdr.NewEncodingBuffer(),
-		builder: db.BatchInsertBuilder{
-			Table:        q.GetTable("history_transactions"),
-			MaxBatchSize: maxBatchSize,
-		},
+		table:          "history_transactions",
+		builder:        db.FastBatchInsertBuilder{},
 	}
 }
 
-// NewTransactionBatchInsertBuilder constructs a new TransactionBatchInsertBuilder instance
-func (q *Q) NewTransactionFilteredTmpBatchInsertBuilder(maxBatchSize int) TransactionBatchInsertBuilder {
+// NewTransactionFilteredTmpBatchInsertBuilder constructs a new TransactionBatchInsertBuilder instance
+func (q *Q) NewTransactionFilteredTmpBatchInsertBuilder() TransactionBatchInsertBuilder {
 	return &transactionBatchInsertBuilder{
 		encodingBuffer: xdr.NewEncodingBuffer(),
-		builder: db.BatchInsertBuilder{
-			Table:        q.GetTable("history_transactions_filtered_tmp"),
-			MaxBatchSize: maxBatchSize,
-		},
+		table:          "history_transactions_filtered_tmp",
+		builder:        db.FastBatchInsertBuilder{},
 	}
 }
 
 // Add adds a new transaction to the batch
-func (i *transactionBatchInsertBuilder) Add(ctx context.Context, transaction ingest.LedgerTransaction, sequence uint32) error {
+func (i *transactionBatchInsertBuilder) Add(transaction ingest.LedgerTransaction, sequence uint32) error {
 	row, err := transactionToRow(transaction, sequence, i.encodingBuffer)
 	if err != nil {
 		return err
 	}
 
-	return i.builder.RowStruct(ctx, row)
+	return i.builder.RowStruct(row)
 }
 
-func (i *transactionBatchInsertBuilder) Exec(ctx context.Context) error {
-	return i.builder.Exec(ctx)
+func (i *transactionBatchInsertBuilder) Exec(ctx context.Context, session db.SessionInterface) error {
+	return i.builder.Exec(ctx, session, i.table)
 }
 
 func signatures(xdrSignatures []xdr.DecoratedSignature) pq.StringArray {

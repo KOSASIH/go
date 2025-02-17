@@ -820,8 +820,11 @@ func IngestTestTrade(
 		return err
 	}
 
-	batch := q.NewTradeBatchInsertBuilder(0)
-	batch.Add(ctx, history.InsertTrade{
+	if err = q.Begin(ctx); err != nil {
+		return err
+	}
+	batch := q.NewTradeBatchInsertBuilder()
+	err = batch.Add(history.InsertTrade{
 		HistoryOperationID: opCounter,
 		Order:              0,
 		CounterAssetID:     assets[assetBought.String()].ID,
@@ -839,13 +842,20 @@ func IngestTestTrade(
 
 		Type: history.OrderbookTradeType,
 	})
-	err = batch.Exec(ctx)
+	if err != nil {
+		return err
+	}
+	err = batch.Exec(ctx, q)
 	if err != nil {
 		return err
 	}
 
 	err = q.RebuildTradeAggregationTimes(context.Background(), timestamp, timestamp, 1000)
 	if err != nil {
+		return err
+	}
+
+	if err := q.Commit(); err != nil {
 		return err
 	}
 

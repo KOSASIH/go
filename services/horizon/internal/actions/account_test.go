@@ -228,7 +228,9 @@ func TestAccountInfo(t *testing.T) {
 	assert.NoError(t, err)
 
 	ledgerFourCloseTime := time.Now().Unix()
-	_, err = q.InsertLedger(tt.Ctx, xdr.LedgerHeaderHistoryEntry{
+	assert.NoError(t, q.Begin(tt.Ctx))
+	ledgerBatch := q.NewLedgerBatchInsertBuilder()
+	err = ledgerBatch.Add(xdr.LedgerHeaderHistoryEntry{
 		Header: xdr.LedgerHeader{
 			LedgerSeq: 4,
 			ScpValue: xdr.StellarValue{
@@ -237,6 +239,8 @@ func TestAccountInfo(t *testing.T) {
 		},
 	}, 0, 0, 0, 0, 0)
 	assert.NoError(t, err)
+	assert.NoError(t, ledgerBatch.Exec(tt.Ctx, q))
+	assert.NoError(t, q.Commit())
 
 	account, err := AccountInfo(tt.Ctx, &history.Q{tt.HorizonSession()}, accountID)
 	tt.Assert.NoError(err)
@@ -408,7 +412,9 @@ func TestGetAccountsHandlerPageResultsByAsset(t *testing.T) {
 	err := q.UpsertAccounts(tt.Ctx, []history.AccountEntry{account1, account2})
 	assert.NoError(t, err)
 	ledgerCloseTime := time.Now().Unix()
-	_, err = q.InsertLedger(tt.Ctx, xdr.LedgerHeaderHistoryEntry{
+	assert.NoError(t, q.Begin(tt.Ctx))
+	ledgerBatch := q.NewLedgerBatchInsertBuilder()
+	err = ledgerBatch.Add(xdr.LedgerHeaderHistoryEntry{
 		Header: xdr.LedgerHeader{
 			LedgerSeq: 1234,
 			ScpValue: xdr.StellarValue{
@@ -417,6 +423,8 @@ func TestGetAccountsHandlerPageResultsByAsset(t *testing.T) {
 		},
 	}, 0, 0, 0, 0, 0)
 	assert.NoError(t, err)
+	assert.NoError(t, ledgerBatch.Exec(tt.Ctx, q))
+	assert.NoError(t, q.Commit())
 
 	for _, row := range accountSigners {
 		_, err = q.CreateAccountSigner(tt.Ctx, row.Account, row.Signer, row.Weight, nil)
@@ -511,7 +519,9 @@ func TestGetAccountsHandlerPageResultsByLiquidityPool(t *testing.T) {
 	assert.NoError(t, err)
 
 	ledgerCloseTime := time.Now().Unix()
-	_, err = q.InsertLedger(tt.Ctx, xdr.LedgerHeaderHistoryEntry{
+	assert.NoError(t, q.Begin(tt.Ctx))
+	ledgerBatch := q.NewLedgerBatchInsertBuilder()
+	err = ledgerBatch.Add(xdr.LedgerHeaderHistoryEntry{
 		Header: xdr.LedgerHeader{
 			LedgerSeq: 1234,
 			ScpValue: xdr.StellarValue{
@@ -520,6 +530,9 @@ func TestGetAccountsHandlerPageResultsByLiquidityPool(t *testing.T) {
 		},
 	}, 0, 0, 0, 0, 0)
 	assert.NoError(t, err)
+	assert.NoError(t, ledgerBatch.Exec(tt.Ctx, q))
+	assert.NoError(t, q.Commit())
+
 	var assetType, code, issuer string
 	usd.MustExtract(&assetType, &code, &issuer)
 	params := map[string]string{

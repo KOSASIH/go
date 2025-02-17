@@ -23,8 +23,8 @@ func (s *TickerSession) RetrievePartialAggMarkets(ctx context.Context,
 	sqlTrue := new(string)
 	*sqlTrue = "TRUE"
 	optVars := []optionalVar{
-		optionalVar{"bAsset.is_valid", sqlTrue},
-		optionalVar{"cAsset.is_valid", sqlTrue},
+		{"bAsset.is_valid", sqlTrue},
+		{"cAsset.is_valid", sqlTrue},
 	}
 
 	// parse base and asset codes and add them as SQL parameters
@@ -34,8 +34,8 @@ func (s *TickerSession) RetrievePartialAggMarkets(ctx context.Context,
 			return
 		}
 		optVars = append(optVars, []optionalVar{
-			optionalVar{"bAsset.code", &bCode},
-			optionalVar{"cAsset.code", &cCode},
+			{"bAsset.code", &bCode},
+			{"cAsset.code", &cCode},
 		}...)
 	}
 
@@ -70,12 +70,12 @@ func (s *TickerSession) RetrievePartialMarkets(ctx context.Context,
 	*sqlTrue = "TRUE"
 
 	where, args := generateWhereClause([]optionalVar{
-		optionalVar{"bAsset.is_valid", sqlTrue},
-		optionalVar{"cAsset.is_valid", sqlTrue},
-		optionalVar{"bAsset.code", baseAssetCode},
-		optionalVar{"bAsset.issuer_account", baseAssetIssuer},
-		optionalVar{"cAsset.code", counterAssetCode},
-		optionalVar{"cAsset.issuer_account", counterAssetIssuer},
+		{"bAsset.is_valid", sqlTrue},
+		{"cAsset.is_valid", sqlTrue},
+		{"bAsset.code", baseAssetCode},
+		{"bAsset.issuer_account", baseAssetIssuer},
+		{"cAsset.code", counterAssetCode},
+		{"cAsset.issuer_account", counterAssetIssuer},
 	})
 	where += fmt.Sprintf(
 		" AND t.ledger_close_time > now() - interval '%d hours'",

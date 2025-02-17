@@ -26,11 +26,12 @@ func TestAccountFilterAllowsWhenMatch(t *testing.T) {
 	err := filter.RefreshAccountFilter(filterConfig)
 	tt.NoError(err)
 
-	result, err := filter.FilterTransaction(ctx, getAccountTestTx(t,
+	isEnabled, result, err := filter.FilterTransaction(ctx, getAccountTestTx(t,
 		"GD6WNNTW664WH7FXC5RUMUTF7P5QSURC2IT36VOQEEGFZ4UWUEQGECAL",
 		"GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H"))
 
 	tt.NoError(err)
+	tt.Equal(isEnabled, true)
 	tt.Equal(result, true)
 }
 
@@ -47,13 +48,14 @@ func TestAccountFilterAllowsWhenDisabled(t *testing.T) {
 	err := filter.RefreshAccountFilter(filterConfig)
 	tt.NoError(err)
 
-	result, err := filter.FilterTransaction(ctx, getAccountTestTx(t,
+	isEnabled, result, err := filter.FilterTransaction(ctx, getAccountTestTx(t,
 		"GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H",
 		"GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H"))
 
 	tt.NoError(err)
 
 	// there is no match on filter rule, but since filter is disabled, it should allow all
+	tt.Equal(isEnabled, false)
 	tt.Equal(result, true)
 }
 
@@ -70,11 +72,12 @@ func TestAccountFilterAllowsWhenEmptyWhitelist(t *testing.T) {
 	err := filter.RefreshAccountFilter(filterConfig)
 	tt.NoError(err)
 
-	result, err := filter.FilterTransaction(ctx, getAccountTestTx(t,
+	isEnabled, result, err := filter.FilterTransaction(ctx, getAccountTestTx(t,
 		"GD6WNNTW664WH7FXC5RUMUTF7P5QSURC2IT36VOQEEGFZ4UWUEQGECAL",
 		"GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H"))
 
 	tt.NoError(err)
+	tt.Equal(isEnabled, false)
 	tt.Equal(result, true)
 }
 
@@ -92,11 +95,12 @@ func TestAccountFilterDoesNotAllowWhenNoMatch(t *testing.T) {
 	err := filter.RefreshAccountFilter(filterConfig)
 	tt.NoError(err)
 
-	result, err := filter.FilterTransaction(ctx, getAccountTestTx(t,
+	isEnabled, result, err := filter.FilterTransaction(ctx, getAccountTestTx(t,
 		"GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H",
 		"GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H"))
 
 	tt.NoError(err)
+	tt.Equal(isEnabled, true)
 	tt.Equal(result, false)
 }
 

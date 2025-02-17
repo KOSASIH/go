@@ -2,6 +2,7 @@ package history
 
 import (
 	"context"
+	"database/sql"
 	"encoding/hex"
 	"fmt"
 	"sort"
@@ -9,7 +10,9 @@ import (
 
 	sq "github.com/Masterminds/squirrel"
 	"github.com/guregu/null"
+
 	"github.com/stellar/go/services/horizon/internal/db2"
+	"github.com/stellar/go/support/db"
 	"github.com/stellar/go/support/errors"
 	"github.com/stellar/go/support/ordered"
 	"github.com/stellar/go/toid"
@@ -69,11 +72,15 @@ func (q *Q) LedgerCapacityUsageStats(ctx context.Context, currentSeq int32, dest
 }
 
 // Page specifies the paging constraints for the query being built by `q`.
-func (q *LedgersQ) Page(page db2.PageQuery) *LedgersQ {
+func (q *LedgersQ) Page(page db2.PageQuery, oldestLedger int32) *LedgersQ {
 	if q.Err != nil {
 		return q
 	}
 
+	if lowerBound := lowestLedgerBound(oldestLedger); lowerBound > 0 && page.Order == "desc" {
+		q.sql = q.sql.
+			Where("hl.id > ?", lowerBound)
+	}
 	q.sql, q.Err = page.ApplyTo(q.sql, "hl.id")
 	return q
 }
@@ -90,27 +97,46 @@ func (q *LedgersQ) Select(ctx context.Context, dest interface{}) error {
 
 // QLedgers defines ingestion ledger related queries.
 type QLedgers interface {
-	InsertLedger(
-		ctx context.Context,
+	NewLedgerBatchInsertBuilder() LedgerBatchInsertBuilder
+}
+
+// LedgerBatchInsertBuilder is used to insert ledgers into the
+// history_ledgers table
+type LedgerBatchInsertBuilder interface {
+	Add(
 		ledger xdr.LedgerHeaderHistoryEntry,
 		successTxsCount int,
 		failedTxsCount int,
 		opCount int,
 		txSetOpCount int,
 		ingestVersion int,
-	) (int64, error)
+	) error
+	Exec(ctx context.Context, session db.SessionInterface) error
 }
 
-// InsertLedger creates a row in the history_ledgers table.
-// Returns number of rows affected and error.
-func (q *Q) InsertLedger(ctx context.Context,
+// ledgerBatchInsertBuilder is a simple wrapper around db.BatchInsertBuilder
+type ledgerBatchInsertBuilder struct {
+	builder db.FastBatchInsertBuilder
+	table   string
+}
+
+// NewLedgerBatchInsertBuilder constructs a new EffectBatchInsertBuilder instance
+func (q *Q) NewLedgerBatchInsertBuilder() LedgerBatchInsertBuilder {
+	return &ledgerBatchInsertBuilder{
+		table:   "history_ledgers",
+		builder: db.FastBatchInsertBuilder{},
+	}
+}
+
+// Add adds a effect to the batch
+func (i *ledgerBatchInsertBuilder) Add(
 	ledger xdr.LedgerHeaderHistoryEntry,
 	successTxsCount int,
 	failedTxsCount int,
 	opCount int,
 	txSetOpCount int,
 	ingestVersion int,
-) (int64, error) {
+) error {
 	m, err := ledgerHeaderToMap(
 		ledger,
 		successTxsCount,
@@ -120,16 +146,26 @@ func (q *Q) InsertLedger(ctx context.Context,
 		ingestVersion,
 	)
 	if err != nil {
-		return 0, err
+		return err
 	}
 
-	sql := sq.Insert("history_ledgers").SetMap(m)
-	result, err := q.Exec(ctx, sql)
+	return i.builder.Row(m)
+}
+
+func (i *ledgerBatchInsertBuilder) Exec(ctx context.Context, session db.SessionInterface) error {
+	return i.builder.Exec(ctx, session, i.table)
+}
+
+func (q *Q) GetNextLedgerSequence(ctx context.Context, start uint32) (uint32, bool, error) {
+	var value uint32
+	err := q.GetRaw(ctx, &value, `SELECT sequence FROM history_ledgers WHERE sequence > ?`, start)
+	if err == sql.ErrNoRows {
+		return 0, false, nil
+	}
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
-
-	return result.RowsAffected()
+	return value, true, nil
 }
 
 // GetLedgerGaps obtains ingestion gaps in the history_ledgers table.

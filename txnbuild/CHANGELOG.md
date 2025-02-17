@@ -3,8 +3,9 @@
 All notable changes to this project will be documented in this
 file.  This project adheres to [Semantic Versioning](http://semver.org/).
 
-
 ## Unreleased
+
+## [11.0.0](https://github.com/stellar/go/releases/tag/horizonclient-v11.0.0) - 2023-03-29
 
 ### Breaking changes
 
@@ -17,7 +18,7 @@ file.  This project adheres to [Semantic Versioning](http://semver.org/).
     * Adds an additional return value of type `*txnbuild.MemoID`.
 
 
-## [10.0.0](https://github.com/stellar/go/releases/tag/horizonclient-v9.0.0) - 2022-04-18
+## [10.0.0](https://github.com/stellar/go/releases/tag/horizonclient-v10.0.0) - 2022-04-18
 
 * Adds support for Protocol 19 transaction preconditions ([CAP-21](https://stellar.org/protocol/cap-21)).
 

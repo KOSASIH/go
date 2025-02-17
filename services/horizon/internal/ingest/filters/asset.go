@@ -34,23 +34,26 @@ func NewAssetFilter() AssetFilter {
 	}
 }
 
-func (filter *assetFilter) RefreshAssetFilter(filterConfig *history.AssetFilterConfig) error {
+func (f *assetFilter) Name() string {
+	return "filters.assetFilter"
+}
+
+func (f *assetFilter) RefreshAssetFilter(filterConfig *history.AssetFilterConfig) error {
 	// only need to re-initialize the filter config state(rules) if it's cached version(in  memory)
 	// is older than the incoming config version based on lastModified epoch timestamp
-	if filterConfig.LastModified > filter.lastModified {
+	if filterConfig.LastModified > f.lastModified {
 		logger.Infof("New Asset Filter config detected, reloading new config %v ", *filterConfig)
-		filter.enabled = filterConfig.Enabled
-		filter.canonicalAssetsLookup = listToSet(filterConfig.Whitelist)
-		filter.lastModified = filterConfig.LastModified
+		f.enabled = filterConfig.Enabled
+		f.canonicalAssetsLookup = listToSet(filterConfig.Whitelist)
+		f.lastModified = filterConfig.LastModified
 	}
 
 	return nil
 }
 
-func (f *assetFilter) FilterTransaction(ctx context.Context, transaction ingest.LedgerTransaction) (bool, error) {
-	// filtering is disabled if the whitelist is empty for now as that is the only filter rule
-	if len(f.canonicalAssetsLookup) < 1 || !f.enabled {
-		return true, nil
+func (f *assetFilter) FilterTransaction(ctx context.Context, transaction ingest.LedgerTransaction) (bool, bool, error) {
+	if !f.isEnabled() {
+		return false, true, nil
 	}
 
 	var operations []xdr.Operation
@@ -64,11 +67,11 @@ func (f *assetFilter) FilterTransaction(ctx context.Context, transaction ingest.
 	}
 
 	if f.filterOperationsMatchedOnRules(operations) {
-		return true, nil
+		return true, true, nil
 	}
 
 	logger.Debugf("No match, dropped tx with seq %v ", transaction.Envelope.SeqNum())
-	return false, nil
+	return true, false, nil
 }
 
 func (f assetFilter) filterOperationsMatchedOnRules(operations []xdr.Operation) bool {
@@ -139,4 +142,9 @@ func listToSet(list []string) set.Set[string] {
 		set.Add(list[i])
 	}
 	return set
+}
+
+func (f assetFilter) isEnabled() bool {
+	// filtering is disabled if the whitelist is empty for now as that is the only filter rule
+	return len(f.canonicalAssetsLookup) >= 1 && f.enabled
 }

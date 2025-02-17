@@ -49,7 +49,7 @@ type metaResult struct {
 // It solves the following issues:
 //
 //   - Decouples buffering from stellarCoreRunner so it can focus on running core.
-//   - Decouples unmarshalling and buffering of LedgerCloseMeta's from CaptiveCore.
+//   - Decouples unmarshaling and buffering of LedgerCloseMeta's from CaptiveCore.
 //   - By adding buffering it allows unmarshaling the ledgers available in Stellar-Core
 //     while previous ledger are being processed.
 //   - Limits memory usage in case of large ledgers are closed by the network.
@@ -97,9 +97,9 @@ func (b *bufferedLedgerMetaReader) readLedgerMetaFromPipe() (*xdr.LedgerCloseMet
 	}
 
 	var xlcm xdr.LedgerCloseMeta
-	_, err = xlcm.DecodeFrom(b.decoder)
+	_, err = xlcm.DecodeFrom(b.decoder, xdr3.DecodeDefaultMaxDepth)
 	if err != nil {
-		return nil, errors.Wrap(err, "unmarshalling framed LedgerCloseMeta")
+		return nil, errors.Wrap(err, "unmarshaling framed LedgerCloseMeta")
 	}
 	return &xlcm, nil
 }

@@ -19,7 +19,7 @@ var recordMetricsCmd = &cobra.Command{
 	Short: "records `/metrics` on admin port for debuging purposes",
 	Long:  "",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if err := horizon.ApplyFlags(config, flags, horizon.ApplyOptions{}); err != nil {
+		if err := horizon.ApplyFlags(globalConfig, globalFlags, horizon.ApplyOptions{}); err != nil {
 			return err
 		}
 
@@ -50,7 +50,7 @@ var recordMetricsCmd = &cobra.Command{
 				time.Duration(time.Duration(scrapeIntervalSeconds*(scrapesCount-i))*time.Second),
 			)
 
-			metricsResponse, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/metrics", config.AdminPort))
+			metricsResponse, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/metrics", globalConfig.AdminPort))
 			if err != nil {
 				return errors.Wrap(err, "Error fetching metrics. Is admin server running?")
 			}

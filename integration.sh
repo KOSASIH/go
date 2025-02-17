@@ -17,7 +17,7 @@ if [[ "$(docker inspect integration_postgres -f '{{.State.Running}}')" != "true"
     --platform linux/amd64 \
     --env POSTGRES_HOST_AUTH_METHOD=trust \
     -p 5432:5432 \
-    circleci/postgres:9.6.5-alpine
+    postgres:12-bullseye
 fi
 
 exec go test -timeout 35m github.com/stellar/go/services/horizon/internal/integration/... "$@"

@@ -25,6 +25,10 @@ type objectAction interface {
 	) (interface{}, error)
 }
 
+type HttpResponse interface {
+	GetStatus() int
+}
+
 type ObjectActionHandler struct {
 	Action objectAction
 }
@@ -41,8 +45,13 @@ func (handler ObjectActionHandler) ServeHTTP(
 			return
 		}
 
-		httpjson.Render(
+		statusCode := http.StatusOK
+		if httpResponse, ok := response.(HttpResponse); ok {
+			statusCode = httpResponse.GetStatus()
+		}
+		httpjson.RenderStatus(
 			w,
+			statusCode,
 			response,
 			httpjson.HALJSON,
 		)
@@ -104,7 +113,7 @@ func repeatableReadStream(
 
 	return func() ([]sse.Event, error) {
 		if session != nil {
-			err := session.BeginTx(&sql.TxOptions{
+			err := session.BeginTx(r.Context(), &sql.TxOptions{
 				Isolation: sql.LevelRepeatableRead,
 				ReadOnly:  true,
 			})

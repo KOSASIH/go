@@ -29,6 +29,8 @@ func horizonPostgres(t *testing.T) *db.DB {
 	return horizonDB
 }
 
+// TODO, remove refs to internal core db, need to remove scenario tests which require this
+// to seed core db.
 func corePostgres(t *testing.T) *db.DB {
 	if coreDB != nil {
 		return coreDB
@@ -60,6 +62,8 @@ func HorizonROURL() string {
 	return horizonDB.RO_DSN
 }
 
+// TODO, remove refs to core db, need to remove scenario tests which require this
+// to seed core db.
 func StellarCore(t *testing.T) *sqlx.DB {
 	if coreDBConn != nil {
 		return coreDBConn
@@ -68,6 +72,8 @@ func StellarCore(t *testing.T) *sqlx.DB {
 	return coreDBConn
 }
 
+// TODO, remove refs to core db, need to remove scenario tests which require this
+// to seed core db.
 func StellarCoreURL() string {
 	if coreDB == nil {
 		log.Panic(fmt.Errorf("StellarCore not initialized"))

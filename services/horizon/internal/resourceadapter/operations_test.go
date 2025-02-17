@@ -19,7 +19,7 @@ func TestNewOperationAllTypesCovered(t *testing.T) {
 		row := history.Operation{
 			Type: xdr.OperationType(typ),
 		}
-		op, err := NewOperation(context.Background(), row, "foo", tx, history.Ledger{})
+		op, err := NewOperation(context.Background(), row, "foo", tx, history.Ledger{}, false)
 		assert.NoError(t, err, s)
 		// if we got a base type, the operation is not covered
 		if _, ok := op.(operations.Base); ok {
@@ -31,7 +31,7 @@ func TestNewOperationAllTypesCovered(t *testing.T) {
 	row := history.Operation{
 		Type: xdr.OperationType(200000),
 	}
-	op, err := NewOperation(context.Background(), row, "foo", tx, history.Ledger{})
+	op, err := NewOperation(context.Background(), row, "foo", tx, history.Ledger{}, false)
 	assert.NoError(t, err)
 	assert.IsType(t, op, operations.Base{})
 
@@ -52,7 +52,7 @@ func TestPopulateOperation_Successful(t *testing.T) {
 
 	assert.NoError(
 		t,
-		PopulateBaseOperation(ctx, &dest, row, "", nil, ledger),
+		PopulateBaseOperation(ctx, &dest, row, "", nil, ledger, false),
 	)
 	assert.True(t, dest.TransactionSuccessful)
 	assert.Nil(t, dest.Transaction)
@@ -62,7 +62,7 @@ func TestPopulateOperation_Successful(t *testing.T) {
 
 	assert.NoError(
 		t,
-		PopulateBaseOperation(ctx, &dest, row, "", nil, ledger),
+		PopulateBaseOperation(ctx, &dest, row, "", nil, ledger, false),
 	)
 	assert.False(t, dest.TransactionSuccessful)
 	assert.Nil(t, dest.Transaction)
@@ -92,12 +92,13 @@ func TestPopulateOperation_WithTransaction(t *testing.T) {
 
 	assert.NoError(
 		t,
-		PopulateBaseOperation(ctx, &dest, operationsRow, transactionRow.TransactionHash, &transactionRow, ledger),
+		PopulateBaseOperation(ctx, &dest, operationsRow, transactionRow.TransactionHash, &transactionRow, ledger, true),
 	)
 	assert.True(t, dest.TransactionSuccessful)
 	assert.True(t, dest.Transaction.Successful)
 	assert.Equal(t, int64(100), dest.Transaction.FeeCharged)
 	assert.Equal(t, int64(10000), dest.Transaction.MaxFee)
+	assert.Empty(t, dest.Transaction.ResultMetaXdr)
 }
 
 func TestPopulateOperation_AllowTrust(t *testing.T) {
@@ -308,7 +309,7 @@ func getJSONResponse(typ xdr.OperationType, details string) (rsp map[string]inte
 		Type:                  typ,
 		DetailsString:         null.StringFrom(details),
 	}
-	resource, err := NewOperation(ctx, operationsRow, "", &transactionRow, history.Ledger{})
+	resource, err := NewOperation(ctx, operationsRow, "", &transactionRow, history.Ledger{}, false)
 	if err != nil {
 		return
 	}
@@ -343,19 +344,19 @@ func TestFeeBumpOperation(t *testing.T) {
 
 	assert.NoError(
 		t,
-		PopulateBaseOperation(ctx, &dest, operationsRow, transactionRow.TransactionHash, nil, history.Ledger{}),
+		PopulateBaseOperation(ctx, &dest, operationsRow, transactionRow.TransactionHash, nil, history.Ledger{}, false),
 	)
 	assert.Equal(t, transactionRow.TransactionHash, dest.TransactionHash)
 
 	assert.NoError(
 		t,
-		PopulateBaseOperation(ctx, &dest, operationsRow, transactionRow.InnerTransactionHash.String, nil, history.Ledger{}),
+		PopulateBaseOperation(ctx, &dest, operationsRow, transactionRow.InnerTransactionHash.String, nil, history.Ledger{}, false),
 	)
 	assert.Equal(t, transactionRow.InnerTransactionHash.String, dest.TransactionHash)
 
 	assert.NoError(
 		t,
-		PopulateBaseOperation(ctx, &dest, operationsRow, transactionRow.TransactionHash, &transactionRow, history.Ledger{}),
+		PopulateBaseOperation(ctx, &dest, operationsRow, transactionRow.TransactionHash, &transactionRow, history.Ledger{}, false),
 	)
 
 	assert.Equal(t, transactionRow.TransactionHash, dest.TransactionHash)
@@ -374,7 +375,7 @@ func TestFeeBumpOperation(t *testing.T) {
 
 	assert.NoError(
 		t,
-		PopulateBaseOperation(ctx, &dest, operationsRow, transactionRow.InnerTransactionHash.String, &transactionRow, history.Ledger{}),
+		PopulateBaseOperation(ctx, &dest, operationsRow, transactionRow.InnerTransactionHash.String, &transactionRow, history.Ledger{}, false),
 	)
 	assert.Equal(t, transactionRow.InnerTransactionHash.String, dest.TransactionHash)
 	assert.Equal(t, transactionRow.InnerTransactionHash.String, dest.Transaction.Hash)

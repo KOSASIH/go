@@ -1,4 +1,4 @@
-# `stellar/expingest-verify-range`
+# `stellar/horizon-verify-range`
 
 This docker image allows running multiple instances of `horizon ingest verify-command` on a single machine or running it in [AWS Batch](https://aws.amazon.com/batch/).
 

@@ -45,7 +45,7 @@ func TestProtocol19Upgrade(t *testing.T) {
 			},
 			Preconditions: txnbuild.Preconditions{
 				TimeBounds:   txnbuild.NewInfiniteTimeout(),
-				LedgerBounds: &txnbuild.LedgerBounds{0, 100},
+				LedgerBounds: &txnbuild.LedgerBounds{MinLedger: 0, MaxLedger: 100},
 			},
 		}
 		_, err := itest.SubmitTransaction(master, txParams)

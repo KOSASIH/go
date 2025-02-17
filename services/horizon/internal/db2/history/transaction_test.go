@@ -8,6 +8,8 @@ import (
 
 	sq "github.com/Masterminds/squirrel"
 	"github.com/guregu/null"
+
+	"github.com/stellar/go/services/horizon/internal/db2"
 	"github.com/stellar/go/xdr"
 
 	"github.com/stellar/go/ingest"
@@ -45,7 +47,8 @@ func TestTransactionByLiquidityPool(t *testing.T) {
 
 	// Insert a phony ledger
 	ledgerCloseTime := time.Now().Unix()
-	_, err := q.InsertLedger(tt.Ctx, xdr.LedgerHeaderHistoryEntry{
+	ledgerBatch := q.NewLedgerBatchInsertBuilder()
+	err := ledgerBatch.Add(xdr.LedgerHeaderHistoryEntry{
 		Header: xdr.LedgerHeader{
 			LedgerSeq: xdr.Uint32(sequence),
 			ScpValue: xdr.StellarValue{
@@ -55,8 +58,12 @@ func TestTransactionByLiquidityPool(t *testing.T) {
 	}, 0, 0, 0, 0, 0)
 	tt.Assert.NoError(err)
 
+	tt.Assert.NoError(q.Begin(tt.Ctx))
+
+	tt.Assert.NoError(ledgerBatch.Exec(tt.Ctx, q.SessionInterface))
+
 	// Insert a phony transaction
-	transactionBuilder := q.NewTransactionBatchInsertBuilder(2)
+	transactionBuilder := q.NewTransactionBatchInsertBuilder()
 	firstTransaction := buildLedgerTransaction(tt.T, testTransaction{
 		index:         uint32(txIndex),
 		envelopeXDR:   "AAAAACiSTRmpH6bHC6Ekna5e82oiGY5vKDEEUgkq9CB//t+rAAAAyAEXUhsAADDRAAAAAAAAAAAAAAABAAAAAAAAAAsBF1IbAABX4QAAAAAAAAAA",
@@ -65,27 +72,24 @@ func TestTransactionByLiquidityPool(t *testing.T) {
 		metaXDR:       "AAAAAQAAAAAAAAAA",
 		hash:          "19aaa18db88605aedec04659fb45e06f240b022eb2d429e05133e4d53cd945ba",
 	})
-	err = transactionBuilder.Add(tt.Ctx, firstTransaction, uint32(sequence))
+	err = transactionBuilder.Add(firstTransaction, uint32(sequence))
 	tt.Assert.NoError(err)
-	err = transactionBuilder.Exec(tt.Ctx)
+	err = transactionBuilder.Exec(tt.Ctx, q)
 	tt.Assert.NoError(err)
 
 	// Insert Liquidity Pool history
 	liquidityPoolID := "a2f38836a839de008cf1d782c81f45e1253cc5d3dad9110b872965484fec0a49"
-	toInternalID, err := q.CreateHistoryLiquidityPools(tt.Ctx, []string{liquidityPoolID}, 2)
-	tt.Assert.NoError(err)
-	lpTransactionBuilder := q.NewTransactionLiquidityPoolBatchInsertBuilder(2)
-	tt.Assert.NoError(err)
-	internalID, ok := toInternalID[liquidityPoolID]
-	tt.Assert.True(ok)
-	err = lpTransactionBuilder.Add(tt.Ctx, txID, internalID)
-	tt.Assert.NoError(err)
-	err = lpTransactionBuilder.Exec(tt.Ctx)
-	tt.Assert.NoError(err)
+	lpLoader := NewLiquidityPoolLoader(ConcurrentInserts)
+	lpTransactionBuilder := q.NewTransactionLiquidityPoolBatchInsertBuilder()
+	tt.Assert.NoError(lpTransactionBuilder.Add(txID, lpLoader.GetFuture(liquidityPoolID)))
+	tt.Assert.NoError(lpLoader.Exec(tt.Ctx, q))
+	tt.Assert.NoError(lpTransactionBuilder.Exec(tt.Ctx, q))
+	tt.Assert.NoError(q.Commit())
 
 	var records []Transaction
-	err = q.Transactions().ForLiquidityPool(tt.Ctx, liquidityPoolID).Select(tt.Ctx, &records)
-	tt.Assert.NoError(err)
+	tt.Assert.NoError(
+		q.Transactions().ForLiquidityPool(tt.Ctx, liquidityPoolID).Select(tt.Ctx, &records),
+	)
 	tt.Assert.Len(records, 1)
 
 }
@@ -206,8 +210,10 @@ func TestInsertTransactionDoesNotAllowDuplicateIndex(t *testing.T) {
 	test.ResetHorizonDB(t, tt.HorizonDB)
 	q := &Q{tt.HorizonSession()}
 
+	tt.Assert.NoError(q.Begin(tt.Ctx))
+
 	sequence := uint32(123)
-	insertBuilder := q.NewTransactionBatchInsertBuilder(0)
+	insertBuilder := q.NewTransactionBatchInsertBuilder()
 
 	firstTransaction := buildLedgerTransaction(tt.T, testTransaction{
 		index:         1,
@@ -226,16 +232,18 @@ func TestInsertTransactionDoesNotAllowDuplicateIndex(t *testing.T) {
 		hash:          "7e2def20d5a21a56be2a457b648f702ee1af889d3df65790e92a05081e9fabf1",
 	})
 
-	tt.Assert.NoError(insertBuilder.Add(tt.Ctx, firstTransaction, sequence))
-	tt.Assert.NoError(insertBuilder.Exec(tt.Ctx))
+	tt.Assert.NoError(insertBuilder.Add(firstTransaction, sequence))
+	tt.Assert.NoError(insertBuilder.Exec(tt.Ctx, q))
+	tt.Assert.NoError(q.Commit())
 
-	tt.Assert.NoError(insertBuilder.Add(tt.Ctx, secondTransaction, sequence))
+	tt.Assert.NoError(q.Begin(tt.Ctx))
+	insertBuilder = q.NewTransactionBatchInsertBuilder()
+	tt.Assert.NoError(insertBuilder.Add(secondTransaction, sequence))
 	tt.Assert.EqualError(
-		insertBuilder.Exec(tt.Ctx),
-		"error adding values while inserting to history_transactions: "+
-			"exec failed: pq: duplicate key value violates unique constraint "+
-			"\"hs_transaction_by_id\"",
+		insertBuilder.Exec(tt.Ctx, q),
+		"pq: duplicate key value violates unique constraint \"hs_transaction_by_id\"",
 	)
+	tt.Assert.NoError(q.Rollback())
 
 	ledger := Ledger{
 		Sequence:                   int32(sequence),
@@ -300,8 +308,6 @@ func TestInsertTransaction(t *testing.T) {
 	*ledger.FailedTransactionCount = 3
 	_, err := q.Exec(tt.Ctx, sq.Insert("history_ledgers").SetMap(ledgerToMap(ledger)))
 	tt.Assert.NoError(err)
-
-	insertBuilder := q.NewTransactionBatchInsertBuilder(0)
 
 	success := true
 
@@ -822,8 +828,11 @@ func TestInsertTransaction(t *testing.T) {
 		},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			tt.Assert.NoError(insertBuilder.Add(tt.Ctx, testCase.toInsert, sequence))
-			tt.Assert.NoError(insertBuilder.Exec(tt.Ctx))
+			insertBuilder := q.NewTransactionBatchInsertBuilder()
+			tt.Assert.NoError(q.Begin(tt.Ctx))
+			tt.Assert.NoError(insertBuilder.Add(testCase.toInsert, sequence))
+			tt.Assert.NoError(insertBuilder.Exec(tt.Ctx, q))
+			tt.Assert.NoError(q.Commit())
 
 			var transactions []Transaction
 			tt.Assert.NoError(q.Transactions().IncludeFailed().Select(tt.Ctx, &transactions))
@@ -883,12 +892,20 @@ func TestFetchFeeBumpTransaction(t *testing.T) {
 		tt.Assert.Equal(byOuterhash, byInnerHash)
 	}
 
-	var outerEffects, innerEffects []Effect
-	err = q.Effects().ForTransaction(tt.Ctx, fixture.OuterHash).Select(tt.Ctx, &outerEffects)
+	var innerEffects []Effect
+	outerEffects, err := q.EffectsForTransaction(tt.Ctx, fixture.OuterHash, db2.PageQuery{
+		Cursor: "0-0",
+		Order:  "asc",
+		Limit:  200,
+	})
 	tt.Assert.NoError(err)
 	tt.Assert.Len(outerEffects, 1)
 
-	err = q.Effects().ForTransaction(tt.Ctx, fixture.InnerHash).Select(tt.Ctx, &innerEffects)
+	innerEffects, err = q.EffectsForTransaction(tt.Ctx, fixture.InnerHash, db2.PageQuery{
+		Cursor: "0-0",
+		Order:  "asc",
+		Limit:  200,
+	})
 	tt.Assert.NoError(err)
 	tt.Assert.Equal(outerEffects, innerEffects)
 }
@@ -912,4 +929,347 @@ func TestHistoryTransactionSchemasMatch(t *testing.T) {
 	tt.Assert.NoError(err)
 
 	tt.Assert.ElementsMatch(txColumns, txTmpFilteredTmpColumns)
+}
+
+func TestTransactionQueryBuilder(t *testing.T) {
+	tt := test.Start(t)
+	defer tt.Finish()
+	test.ResetHorizonDB(t, tt.HorizonDB)
+	q := &Q{tt.HorizonSession()}
+
+	tt.Assert.NoError(q.Begin(tt.Ctx))
+
+	address := "GBXGQJWVLWOYHFLVTKWV5FGHA3LNYY2JQKM7OAJAUEQFU6LPCSEFVXON"
+	accountLoader := NewAccountLoader(ConcurrentInserts)
+	accountLoader.GetFuture(address)
+
+	cbID := "00000000178826fbfe339e1f5c53417c6fedfe2c05e8bec14303143ec46b38981b09c3f9"
+	cbLoader := NewClaimableBalanceLoader(ConcurrentInserts)
+	cbLoader.GetFuture(cbID)
+
+	lpID := "0000a8198b5e25994c1ca5b0556faeb27325ac746296944144e0a7406d501e8a"
+	lpLoader := NewLiquidityPoolLoader(ConcurrentInserts)
+	lpLoader.GetFuture(lpID)
+
+	tt.Assert.NoError(accountLoader.Exec(tt.Ctx, q))
+	tt.Assert.NoError(cbLoader.Exec(tt.Ctx, q))
+	tt.Assert.NoError(lpLoader.Exec(tt.Ctx, q))
+
+	tt.Assert.NoError(q.Commit())
+
+	for _, testCase := range []struct {
+		q            *TransactionsQ
+		expectedSQL  string
+		expectedArgs []interface{}
+	}{
+		{
+			q.Transactions().ForAccount(tt.Ctx, address).Page(db2.PageQuery{Cursor: "8589938689", Order: "asc", Limit: 10}, 0),
+			"SELECT " +
+				"ht.id, ht.transaction_hash, ht.ledger_sequence, ht.application_order, " +
+				"ht.account, ht.account_muxed, ht.account_sequence, ht.max_fee, " +
+				"COALESCE(ht.fee_charged, ht.max_fee) as fee_charged, ht.operation_count, " +
+				"ht.tx_envelope, ht.tx_result, ht.tx_meta, ht.tx_fee_meta, ht.created_at, " +
+				"ht.updated_at, COALESCE(ht.successful, true) as successful, ht.signatures, " +
+				"ht.memo_type, ht.memo, ht.time_bounds, ht.ledger_bounds, ht.min_account_sequence, " +
+				"ht.min_account_sequence_age, ht.min_account_sequence_ledger_gap, ht.extra_signers, " +
+				"hl.closed_at AS ledger_close_time, ht.inner_transaction_hash, ht.fee_account, " +
+				"ht.fee_account_muxed, ht.new_max_fee, ht.inner_signatures " +
+				"FROM history_transactions ht " +
+				"LEFT JOIN history_ledgers hl ON ht.ledger_sequence = hl.sequence " +
+				"JOIN history_transaction_participants htp ON htp.history_transaction_id = ht.id " +
+				"WHERE htp.history_account_id = ? AND htp.history_transaction_id > ? " +
+				"ORDER BY htp.history_transaction_id asc LIMIT 10",
+			[]interface{}{int64(1), int64(8589938689)},
+		},
+		{
+			q.Transactions().ForClaimableBalance(tt.Ctx, cbID).Page(db2.PageQuery{Cursor: "8589938689", Order: "asc", Limit: 10}, 0),
+			"SELECT " +
+				"ht.id, ht.transaction_hash, ht.ledger_sequence, ht.application_order, " +
+				"ht.account, ht.account_muxed, ht.account_sequence, ht.max_fee, " +
+				"COALESCE(ht.fee_charged, ht.max_fee) as fee_charged, ht.operation_count, " +
+				"ht.tx_envelope, ht.tx_result, ht.tx_meta, ht.tx_fee_meta, ht.created_at, " +
+				"ht.updated_at, COALESCE(ht.successful, true) as successful, ht.signatures, " +
+				"ht.memo_type, ht.memo, ht.time_bounds, ht.ledger_bounds, ht.min_account_sequence, " +
+				"ht.min_account_sequence_age, ht.min_account_sequence_ledger_gap, ht.extra_signers, " +
+				"hl.closed_at AS ledger_close_time, ht.inner_transaction_hash, ht.fee_account, " +
+				"ht.fee_account_muxed, ht.new_max_fee, ht.inner_signatures " +
+				"FROM history_transactions ht " +
+				"LEFT JOIN history_ledgers hl ON ht.ledger_sequence = hl.sequence " +
+				"JOIN history_transaction_claimable_balances htcb ON htcb.history_transaction_id = ht.id " +
+				"WHERE htcb.history_claimable_balance_id = ? AND htcb.history_transaction_id > ? " +
+				"ORDER BY htcb.history_transaction_id asc LIMIT 10",
+			[]interface{}{int64(1), int64(8589938689)},
+		},
+		{
+			q.Transactions().ForLiquidityPool(tt.Ctx, lpID).Page(db2.PageQuery{Cursor: "8589938689", Order: "asc", Limit: 10}, 0),
+			"SELECT " +
+				"ht.id, ht.transaction_hash, ht.ledger_sequence, ht.application_order, " +
+				"ht.account, ht.account_muxed, ht.account_sequence, ht.max_fee, " +
+				"COALESCE(ht.fee_charged, ht.max_fee) as fee_charged, ht.operation_count, " +
+				"ht.tx_envelope, ht.tx_result, ht.tx_meta, ht.tx_fee_meta, ht.created_at, " +
+				"ht.updated_at, COALESCE(ht.successful, true) as successful, ht.signatures, " +
+				"ht.memo_type, ht.memo, ht.time_bounds, ht.ledger_bounds, ht.min_account_sequence, " +
+				"ht.min_account_sequence_age, ht.min_account_sequence_ledger_gap, ht.extra_signers, " +
+				"hl.closed_at AS ledger_close_time, ht.inner_transaction_hash, ht.fee_account, " +
+				"ht.fee_account_muxed, ht.new_max_fee, ht.inner_signatures " +
+				"FROM history_transactions ht " +
+				"LEFT JOIN history_ledgers hl ON ht.ledger_sequence = hl.sequence " +
+				"JOIN history_transaction_liquidity_pools htlp ON htlp.history_transaction_id = ht.id " +
+				"WHERE htlp.history_liquidity_pool_id = ? AND htlp.history_transaction_id > ? " +
+				"ORDER BY htlp.history_transaction_id asc LIMIT 10",
+			[]interface{}{int64(1), int64(8589938689)},
+		},
+		{
+			q.Transactions().Page(db2.PageQuery{Cursor: "8589938689", Order: "asc", Limit: 10}, 0),
+			"SELECT " +
+				"ht.id, ht.transaction_hash, ht.ledger_sequence, ht.application_order, " +
+				"ht.account, ht.account_muxed, ht.account_sequence, ht.max_fee, " +
+				"COALESCE(ht.fee_charged, ht.max_fee) as fee_charged, ht.operation_count, " +
+				"ht.tx_envelope, ht.tx_result, ht.tx_meta, ht.tx_fee_meta, ht.created_at, " +
+				"ht.updated_at, COALESCE(ht.successful, true) as successful, ht.signatures, " +
+				"ht.memo_type, ht.memo, ht.time_bounds, ht.ledger_bounds, ht.min_account_sequence, " +
+				"ht.min_account_sequence_age, ht.min_account_sequence_ledger_gap, ht.extra_signers, " +
+				"hl.closed_at AS ledger_close_time, ht.inner_transaction_hash, ht.fee_account, " +
+				"ht.fee_account_muxed, ht.new_max_fee, ht.inner_signatures " +
+				"FROM history_transactions ht " +
+				"LEFT JOIN history_ledgers hl ON ht.ledger_sequence = hl.sequence " +
+				"WHERE ht.id > ? " +
+				"ORDER BY ht.id asc LIMIT 10",
+			[]interface{}{int64(8589938689)},
+		},
+		{
+			q.Transactions().ForAccount(tt.Ctx, address).Page(db2.PageQuery{Cursor: "8589938689", Order: "asc", Limit: 10}, 100),
+			"SELECT " +
+				"ht.id, ht.transaction_hash, ht.ledger_sequence, ht.application_order, " +
+				"ht.account, ht.account_muxed, ht.account_sequence, ht.max_fee, " +
+				"COALESCE(ht.fee_charged, ht.max_fee) as fee_charged, ht.operation_count, " +
+				"ht.tx_envelope, ht.tx_result, ht.tx_meta, ht.tx_fee_meta, ht.created_at, " +
+				"ht.updated_at, COALESCE(ht.successful, true) as successful, ht.signatures, " +
+				"ht.memo_type, ht.memo, ht.time_bounds, ht.ledger_bounds, ht.min_account_sequence, " +
+				"ht.min_account_sequence_age, ht.min_account_sequence_ledger_gap, ht.extra_signers, " +
+				"hl.closed_at AS ledger_close_time, ht.inner_transaction_hash, ht.fee_account, " +
+				"ht.fee_account_muxed, ht.new_max_fee, ht.inner_signatures " +
+				"FROM history_transactions ht " +
+				"LEFT JOIN history_ledgers hl ON ht.ledger_sequence = hl.sequence " +
+				"JOIN history_transaction_participants htp ON htp.history_transaction_id = ht.id " +
+				"WHERE htp.history_account_id = ? AND htp.history_transaction_id > ? " +
+				"ORDER BY htp.history_transaction_id asc LIMIT 10",
+			[]interface{}{int64(1), int64(8589938689)},
+		},
+		{
+			q.Transactions().ForClaimableBalance(tt.Ctx, cbID).Page(db2.PageQuery{Cursor: "8589938689", Order: "asc", Limit: 10}, 100),
+			"SELECT " +
+				"ht.id, ht.transaction_hash, ht.ledger_sequence, ht.application_order, " +
+				"ht.account, ht.account_muxed, ht.account_sequence, ht.max_fee, " +
+				"COALESCE(ht.fee_charged, ht.max_fee) as fee_charged, ht.operation_count, " +
+				"ht.tx_envelope, ht.tx_result, ht.tx_meta, ht.tx_fee_meta, ht.created_at, " +
+				"ht.updated_at, COALESCE(ht.successful, true) as successful, ht.signatures, " +
+				"ht.memo_type, ht.memo, ht.time_bounds, ht.ledger_bounds, ht.min_account_sequence, " +
+				"ht.min_account_sequence_age, ht.min_account_sequence_ledger_gap, ht.extra_signers, " +
+				"hl.closed_at AS ledger_close_time, ht.inner_transaction_hash, ht.fee_account, " +
+				"ht.fee_account_muxed, ht.new_max_fee, ht.inner_signatures " +
+				"FROM history_transactions ht " +
+				"LEFT JOIN history_ledgers hl ON ht.ledger_sequence = hl.sequence " +
+				"JOIN history_transaction_claimable_balances htcb ON htcb.history_transaction_id = ht.id " +
+				"WHERE htcb.history_claimable_balance_id = ? AND htcb.history_transaction_id > ? " +
+				"ORDER BY htcb.history_transaction_id asc LIMIT 10",
+			[]interface{}{int64(1), int64(8589938689)},
+		},
+		{
+			q.Transactions().ForLiquidityPool(tt.Ctx, lpID).Page(db2.PageQuery{Cursor: "8589938689", Order: "asc", Limit: 10}, 100),
+			"SELECT " +
+				"ht.id, ht.transaction_hash, ht.ledger_sequence, ht.application_order, " +
+				"ht.account, ht.account_muxed, ht.account_sequence, ht.max_fee, " +
+				"COALESCE(ht.fee_charged, ht.max_fee) as fee_charged, ht.operation_count, " +
+				"ht.tx_envelope, ht.tx_result, ht.tx_meta, ht.tx_fee_meta, ht.created_at, " +
+				"ht.updated_at, COALESCE(ht.successful, true) as successful, ht.signatures, " +
+				"ht.memo_type, ht.memo, ht.time_bounds, ht.ledger_bounds, ht.min_account_sequence, " +
+				"ht.min_account_sequence_age, ht.min_account_sequence_ledger_gap, ht.extra_signers, " +
+				"hl.closed_at AS ledger_close_time, ht.inner_transaction_hash, ht.fee_account, " +
+				"ht.fee_account_muxed, ht.new_max_fee, ht.inner_signatures " +
+				"FROM history_transactions ht " +
+				"LEFT JOIN history_ledgers hl ON ht.ledger_sequence = hl.sequence " +
+				"JOIN history_transaction_liquidity_pools htlp ON htlp.history_transaction_id = ht.id " +
+				"WHERE htlp.history_liquidity_pool_id = ? AND htlp.history_transaction_id > ? " +
+				"ORDER BY htlp.history_transaction_id asc LIMIT 10",
+			[]interface{}{int64(1), int64(8589938689)},
+		},
+		{
+			q.Transactions().Page(db2.PageQuery{Cursor: "8589938689", Order: "asc", Limit: 10}, 100),
+			"SELECT " +
+				"ht.id, ht.transaction_hash, ht.ledger_sequence, ht.application_order, " +
+				"ht.account, ht.account_muxed, ht.account_sequence, ht.max_fee, " +
+				"COALESCE(ht.fee_charged, ht.max_fee) as fee_charged, ht.operation_count, " +
+				"ht.tx_envelope, ht.tx_result, ht.tx_meta, ht.tx_fee_meta, ht.created_at, " +
+				"ht.updated_at, COALESCE(ht.successful, true) as successful, ht.signatures, " +
+				"ht.memo_type, ht.memo, ht.time_bounds, ht.ledger_bounds, ht.min_account_sequence, " +
+				"ht.min_account_sequence_age, ht.min_account_sequence_ledger_gap, ht.extra_signers, " +
+				"hl.closed_at AS ledger_close_time, ht.inner_transaction_hash, ht.fee_account, " +
+				"ht.fee_account_muxed, ht.new_max_fee, ht.inner_signatures " +
+				"FROM history_transactions ht " +
+				"LEFT JOIN history_ledgers hl ON ht.ledger_sequence = hl.sequence " +
+				"WHERE ht.id > ? " +
+				"ORDER BY ht.id asc LIMIT 10",
+			[]interface{}{int64(8589938689)},
+		},
+		{
+			q.Transactions().ForAccount(tt.Ctx, address).Page(db2.PageQuery{Cursor: "8589938689", Order: "desc", Limit: 10}, 0),
+			"SELECT " +
+				"ht.id, ht.transaction_hash, ht.ledger_sequence, ht.application_order, " +
+				"ht.account, ht.account_muxed, ht.account_sequence, ht.max_fee, " +
+				"COALESCE(ht.fee_charged, ht.max_fee) as fee_charged, ht.operation_count, " +
+				"ht.tx_envelope, ht.tx_result, ht.tx_meta, ht.tx_fee_meta, ht.created_at, " +
+				"ht.updated_at, COALESCE(ht.successful, true) as successful, ht.signatures, " +
+				"ht.memo_type, ht.memo, ht.time_bounds, ht.ledger_bounds, ht.min_account_sequence, " +
+				"ht.min_account_sequence_age, ht.min_account_sequence_ledger_gap, ht.extra_signers, " +
+				"hl.closed_at AS ledger_close_time, ht.inner_transaction_hash, ht.fee_account, " +
+				"ht.fee_account_muxed, ht.new_max_fee, ht.inner_signatures " +
+				"FROM history_transactions ht " +
+				"LEFT JOIN history_ledgers hl ON ht.ledger_sequence = hl.sequence " +
+				"JOIN history_transaction_participants htp ON htp.history_transaction_id = ht.id " +
+				"WHERE htp.history_account_id = ? AND htp.history_transaction_id < ? " +
+				"ORDER BY htp.history_transaction_id desc LIMIT 10",
+			[]interface{}{int64(1), int64(8589938689)},
+		},
+		{
+			q.Transactions().ForClaimableBalance(tt.Ctx, cbID).Page(db2.PageQuery{Cursor: "8589938689", Order: "desc", Limit: 10}, 0),
+			"SELECT " +
+				"ht.id, ht.transaction_hash, ht.ledger_sequence, ht.application_order, " +
+				"ht.account, ht.account_muxed, ht.account_sequence, ht.max_fee, " +
+				"COALESCE(ht.fee_charged, ht.max_fee) as fee_charged, ht.operation_count, " +
+				"ht.tx_envelope, ht.tx_result, ht.tx_meta, ht.tx_fee_meta, ht.created_at, " +
+				"ht.updated_at, COALESCE(ht.successful, true) as successful, ht.signatures, " +
+				"ht.memo_type, ht.memo, ht.time_bounds, ht.ledger_bounds, ht.min_account_sequence, " +
+				"ht.min_account_sequence_age, ht.min_account_sequence_ledger_gap, ht.extra_signers, " +
+				"hl.closed_at AS ledger_close_time, ht.inner_transaction_hash, ht.fee_account, " +
+				"ht.fee_account_muxed, ht.new_max_fee, ht.inner_signatures " +
+				"FROM history_transactions ht " +
+				"LEFT JOIN history_ledgers hl ON ht.ledger_sequence = hl.sequence " +
+				"JOIN history_transaction_claimable_balances htcb ON htcb.history_transaction_id = ht.id " +
+				"WHERE htcb.history_claimable_balance_id = ? AND htcb.history_transaction_id < ? " +
+				"ORDER BY htcb.history_transaction_id desc LIMIT 10",
+			[]interface{}{int64(1), int64(8589938689)},
+		},
+		{
+			q.Transactions().ForLiquidityPool(tt.Ctx, lpID).Page(db2.PageQuery{Cursor: "8589938689", Order: "desc", Limit: 10}, 0),
+			"SELECT " +
+				"ht.id, ht.transaction_hash, ht.ledger_sequence, ht.application_order, " +
+				"ht.account, ht.account_muxed, ht.account_sequence, ht.max_fee, " +
+				"COALESCE(ht.fee_charged, ht.max_fee) as fee_charged, ht.operation_count, " +
+				"ht.tx_envelope, ht.tx_result, ht.tx_meta, ht.tx_fee_meta, ht.created_at, " +
+				"ht.updated_at, COALESCE(ht.successful, true) as successful, ht.signatures, " +
+				"ht.memo_type, ht.memo, ht.time_bounds, ht.ledger_bounds, ht.min_account_sequence, " +
+				"ht.min_account_sequence_age, ht.min_account_sequence_ledger_gap, ht.extra_signers, " +
+				"hl.closed_at AS ledger_close_time, ht.inner_transaction_hash, ht.fee_account, " +
+				"ht.fee_account_muxed, ht.new_max_fee, ht.inner_signatures " +
+				"FROM history_transactions ht " +
+				"LEFT JOIN history_ledgers hl ON ht.ledger_sequence = hl.sequence " +
+				"JOIN history_transaction_liquidity_pools htlp ON htlp.history_transaction_id = ht.id " +
+				"WHERE htlp.history_liquidity_pool_id = ? AND htlp.history_transaction_id < ? " +
+				"ORDER BY htlp.history_transaction_id desc LIMIT 10",
+			[]interface{}{int64(1), int64(8589938689)},
+		},
+		{
+			q.Transactions().Page(db2.PageQuery{Cursor: "8589938689", Order: "desc", Limit: 10}, 0),
+			"SELECT " +
+				"ht.id, ht.transaction_hash, ht.ledger_sequence, ht.application_order, " +
+				"ht.account, ht.account_muxed, ht.account_sequence, ht.max_fee, " +
+				"COALESCE(ht.fee_charged, ht.max_fee) as fee_charged, ht.operation_count, " +
+				"ht.tx_envelope, ht.tx_result, ht.tx_meta, ht.tx_fee_meta, ht.created_at, " +
+				"ht.updated_at, COALESCE(ht.successful, true) as successful, ht.signatures, " +
+				"ht.memo_type, ht.memo, ht.time_bounds, ht.ledger_bounds, ht.min_account_sequence, " +
+				"ht.min_account_sequence_age, ht.min_account_sequence_ledger_gap, ht.extra_signers, " +
+				"hl.closed_at AS ledger_close_time, ht.inner_transaction_hash, ht.fee_account, " +
+				"ht.fee_account_muxed, ht.new_max_fee, ht.inner_signatures " +
+				"FROM history_transactions ht " +
+				"LEFT JOIN history_ledgers hl ON ht.ledger_sequence = hl.sequence " +
+				"WHERE ht.id < ? " +
+				"ORDER BY ht.id desc LIMIT 10",
+			[]interface{}{int64(8589938689)},
+		},
+		{
+			q.Transactions().ForAccount(tt.Ctx, address).Page(db2.PageQuery{Cursor: "8589938689", Order: "desc", Limit: 10}, 100),
+			"SELECT " +
+				"ht.id, ht.transaction_hash, ht.ledger_sequence, ht.application_order, " +
+				"ht.account, ht.account_muxed, ht.account_sequence, ht.max_fee, " +
+				"COALESCE(ht.fee_charged, ht.max_fee) as fee_charged, ht.operation_count, " +
+				"ht.tx_envelope, ht.tx_result, ht.tx_meta, ht.tx_fee_meta, ht.created_at, " +
+				"ht.updated_at, COALESCE(ht.successful, true) as successful, ht.signatures, " +
+				"ht.memo_type, ht.memo, ht.time_bounds, ht.ledger_bounds, ht.min_account_sequence, " +
+				"ht.min_account_sequence_age, ht.min_account_sequence_ledger_gap, ht.extra_signers, " +
+				"hl.closed_at AS ledger_close_time, ht.inner_transaction_hash, ht.fee_account, " +
+				"ht.fee_account_muxed, ht.new_max_fee, ht.inner_signatures " +
+				"FROM history_transactions ht " +
+				"LEFT JOIN history_ledgers hl ON ht.ledger_sequence = hl.sequence " +
+				"JOIN history_transaction_participants htp ON htp.history_transaction_id = ht.id " +
+				"WHERE htp.history_account_id = ? AND htp.history_transaction_id > ? " +
+				"AND htp.history_transaction_id < ? " +
+				"ORDER BY htp.history_transaction_id desc LIMIT 10",
+			[]interface{}{int64(1), int64(429496729599), int64(8589938689)},
+		},
+		{
+			q.Transactions().ForClaimableBalance(tt.Ctx, cbID).Page(db2.PageQuery{Cursor: "8589938689", Order: "desc", Limit: 10}, 100),
+			"SELECT " +
+				"ht.id, ht.transaction_hash, ht.ledger_sequence, ht.application_order, " +
+				"ht.account, ht.account_muxed, ht.account_sequence, ht.max_fee, " +
+				"COALESCE(ht.fee_charged, ht.max_fee) as fee_charged, ht.operation_count, " +
+				"ht.tx_envelope, ht.tx_result, ht.tx_meta, ht.tx_fee_meta, ht.created_at, " +
+				"ht.updated_at, COALESCE(ht.successful, true) as successful, ht.signatures, " +
+				"ht.memo_type, ht.memo, ht.time_bounds, ht.ledger_bounds, ht.min_account_sequence, " +
+				"ht.min_account_sequence_age, ht.min_account_sequence_ledger_gap, ht.extra_signers, " +
+				"hl.closed_at AS ledger_close_time, ht.inner_transaction_hash, ht.fee_account, " +
+				"ht.fee_account_muxed, ht.new_max_fee, ht.inner_signatures " +
+				"FROM history_transactions ht " +
+				"LEFT JOIN history_ledgers hl ON ht.ledger_sequence = hl.sequence " +
+				"JOIN history_transaction_claimable_balances htcb ON htcb.history_transaction_id = ht.id " +
+				"WHERE htcb.history_claimable_balance_id = ? AND htcb.history_transaction_id > ? " +
+				"AND htcb.history_transaction_id < ? " +
+				"ORDER BY htcb.history_transaction_id desc LIMIT 10",
+			[]interface{}{int64(1), int64(429496729599), int64(8589938689)},
+		},
+		{
+			q.Transactions().ForLiquidityPool(tt.Ctx, lpID).Page(db2.PageQuery{Cursor: "8589938689", Order: "desc", Limit: 10}, 100),
+			"SELECT " +
+				"ht.id, ht.transaction_hash, ht.ledger_sequence, ht.application_order, " +
+				"ht.account, ht.account_muxed, ht.account_sequence, ht.max_fee, " +
+				"COALESCE(ht.fee_charged, ht.max_fee) as fee_charged, ht.operation_count, " +
+				"ht.tx_envelope, ht.tx_result, ht.tx_meta, ht.tx_fee_meta, ht.created_at, " +
+				"ht.updated_at, COALESCE(ht.successful, true) as successful, ht.signatures, " +
+				"ht.memo_type, ht.memo, ht.time_bounds, ht.ledger_bounds, ht.min_account_sequence, " +
+				"ht.min_account_sequence_age, ht.min_account_sequence_ledger_gap, ht.extra_signers, " +
+				"hl.closed_at AS ledger_close_time, ht.inner_transaction_hash, ht.fee_account, " +
+				"ht.fee_account_muxed, ht.new_max_fee, ht.inner_signatures " +
+				"FROM history_transactions ht " +
+				"LEFT JOIN history_ledgers hl ON ht.ledger_sequence = hl.sequence " +
+				"JOIN history_transaction_liquidity_pools htlp ON htlp.history_transaction_id = ht.id " +
+				"WHERE htlp.history_liquidity_pool_id = ? AND htlp.history_transaction_id > ? " +
+				"AND htlp.history_transaction_id < ? " +
+				"ORDER BY htlp.history_transaction_id desc LIMIT 10",
+			[]interface{}{int64(1), int64(429496729599), int64(8589938689)},
+		},
+		{
+			q.Transactions().Page(db2.PageQuery{Cursor: "8589938689", Order: "desc", Limit: 10}, 100),
+			"SELECT " +
+				"ht.id, ht.transaction_hash, ht.ledger_sequence, ht.application_order, " +
+				"ht.account, ht.account_muxed, ht.account_sequence, ht.max_fee, " +
+				"COALESCE(ht.fee_charged, ht.max_fee) as fee_charged, ht.operation_count, " +
+				"ht.tx_envelope, ht.tx_result, ht.tx_meta, ht.tx_fee_meta, ht.created_at, " +
+				"ht.updated_at, COALESCE(ht.successful, true) as successful, ht.signatures, " +
+				"ht.memo_type, ht.memo, ht.time_bounds, ht.ledger_bounds, ht.min_account_sequence, " +
+				"ht.min_account_sequence_age, ht.min_account_sequence_ledger_gap, ht.extra_signers, " +
+				"hl.closed_at AS ledger_close_time, ht.inner_transaction_hash, ht.fee_account, " +
+				"ht.fee_account_muxed, ht.new_max_fee, ht.inner_signatures " +
+				"FROM history_transactions ht " +
+				"LEFT JOIN history_ledgers hl ON ht.ledger_sequence = hl.sequence " +
+				"WHERE ht.id > ? AND ht.id < ? " +
+				"ORDER BY ht.id desc LIMIT 10",
+			[]interface{}{int64(429496729599), int64(8589938689)},
+		},
+	} {
+		tt.Assert.NoError(testCase.q.Err)
+		got, args, err := testCase.q.sql.ToSql()
+		tt.Assert.NoError(err)
+		tt.Assert.Equal(got, testCase.expectedSQL)
+		tt.Assert.Equal(args, testCase.expectedArgs)
+	}
 }

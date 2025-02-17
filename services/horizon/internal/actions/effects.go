@@ -56,7 +56,7 @@ func (handler GetEffectsHandler) GetResourcePage(w HeaderWriter, r *http.Request
 		return nil, err
 	}
 
-	err = validateCursorWithinHistory(handler.LedgerState, pq)
+	err = validateAndAdjustCursor(handler.LedgerState, &pq)
 	if err != nil {
 		return nil, err
 	}
@@ -72,7 +72,7 @@ func (handler GetEffectsHandler) GetResourcePage(w HeaderWriter, r *http.Request
 		return nil, err
 	}
 
-	records, err := loadEffectRecords(r.Context(), historyQ, qp, pq)
+	records, err := loadEffectRecords(r.Context(), historyQ, qp, pq, handler.LedgerState.CurrentStatus().HistoryElder)
 	if err != nil {
 		return nil, errors.Wrap(err, "loading transaction records")
 	}
@@ -94,26 +94,21 @@ func (handler GetEffectsHandler) GetResourcePage(w HeaderWriter, r *http.Request
 	return result, nil
 }
 
-func loadEffectRecords(ctx context.Context, hq *history.Q, qp EffectsQuery, pq db2.PageQuery) ([]history.Effect, error) {
-	effects := hq.Effects()
-
+func loadEffectRecords(ctx context.Context, hq *history.Q, qp EffectsQuery, pq db2.PageQuery, oldestLedger int32) ([]history.Effect, error) {
 	switch {
 	case qp.AccountID != "":
-		effects.ForAccount(ctx, qp.AccountID)
+		return hq.EffectsForAccount(ctx, qp.AccountID, pq, oldestLedger)
 	case qp.LiquidityPoolID != "":
-		effects.ForLiquidityPool(ctx, pq, qp.LiquidityPoolID)
+		return hq.EffectsForLiquidityPool(ctx, qp.LiquidityPoolID, pq, oldestLedger)
 	case qp.OperationID > 0:
-		effects.ForOperation(int64(qp.OperationID))
+		return hq.EffectsForOperation(ctx, int64(qp.OperationID), pq)
 	case qp.LedgerID > 0:
-		effects.ForLedger(ctx, int32(qp.LedgerID))
+		return hq.EffectsForLedger(ctx, int32(qp.LedgerID), pq)
 	case qp.TxHash != "":
-		effects.ForTransaction(ctx, qp.TxHash)
+		return hq.EffectsForTransaction(ctx, qp.TxHash, pq)
+	default:
+		return hq.Effects(ctx, pq, oldestLedger)
 	}
-
-	var result []history.Effect
-	err := effects.Page(pq).Select(ctx, &result)
-
-	return result, err
 }
 
 func loadEffectLedgers(ctx context.Context, hq *history.Q, effects []history.Effect) (map[int32]history.Ledger, error) {

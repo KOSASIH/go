@@ -24,5 +24,7 @@ ALTER TABLE history_transactions DROP extra_signers;
 ALTER TABLE accounts DROP sequence_ledger;
 ALTER TABLE accounts DROP sequence_time;
 
+-- we cannot restore the original type of varying(64) because there might be some
+-- rows with signers that are too long.
 ALTER TABLE accounts_signers
-  ALTER COLUMN signer TYPE character varying(64);
+  ALTER COLUMN signer TYPE character varying(165);

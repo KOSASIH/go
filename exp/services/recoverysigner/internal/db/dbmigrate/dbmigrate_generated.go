@@ -380,15 +380,15 @@ type bintree struct {
 }
 
 var _bintree = &bintree{nil, map[string]*bintree{
-	"migrations": &bintree{nil, map[string]*bintree{
-		"20200309000000-initial-1.sql":                 &bintree{migrations20200309000000Initial1Sql, map[string]*bintree{}},
-		"20200309000001-initial-2.sql":                 &bintree{migrations20200309000001Initial2Sql, map[string]*bintree{}},
-		"20200311000000-create-accounts.sql":           &bintree{migrations20200311000000CreateAccountsSql, map[string]*bintree{}},
-		"20200311000001-create-identities.sql":         &bintree{migrations20200311000001CreateIdentitiesSql, map[string]*bintree{}},
-		"20200311000002-create-auth-methods.sql":       &bintree{migrations20200311000002CreateAuthMethodsSql, map[string]*bintree{}},
-		"20200320000000-create-accounts-audit.sql":     &bintree{migrations20200320000000CreateAccountsAuditSql, map[string]*bintree{}},
-		"20200320000001-create-identities-audit.sql":   &bintree{migrations20200320000001CreateIdentitiesAuditSql, map[string]*bintree{}},
-		"20200320000002-create-auth-methods-audit.sql": &bintree{migrations20200320000002CreateAuthMethodsAuditSql, map[string]*bintree{}},
+	"migrations": {nil, map[string]*bintree{
+		"20200309000000-initial-1.sql":                 {migrations20200309000000Initial1Sql, map[string]*bintree{}},
+		"20200309000001-initial-2.sql":                 {migrations20200309000001Initial2Sql, map[string]*bintree{}},
+		"20200311000000-create-accounts.sql":           {migrations20200311000000CreateAccountsSql, map[string]*bintree{}},
+		"20200311000001-create-identities.sql":         {migrations20200311000001CreateIdentitiesSql, map[string]*bintree{}},
+		"20200311000002-create-auth-methods.sql":       {migrations20200311000002CreateAuthMethodsSql, map[string]*bintree{}},
+		"20200320000000-create-accounts-audit.sql":     {migrations20200320000000CreateAccountsAuditSql, map[string]*bintree{}},
+		"20200320000001-create-identities-audit.sql":   {migrations20200320000001CreateIdentitiesAuditSql, map[string]*bintree{}},
+		"20200320000002-create-auth-methods-audit.sql": {migrations20200320000002CreateAuthMethodsAuditSql, map[string]*bintree{}},
 	}},
 }}
 

@@ -3,8 +3,4 @@ services:
   horizon:
     platform: linux/amd64
     environment:
-      - HISTORY_ARCHIVE_URLS=https://history.stellar.org/prd/core-live/core_live_001
-      - NETWORK_PASSPHRASE=Public Global Stellar Network ; September 2015
-      - CAPTIVE_CORE_CONFIG_APPEND_PATH=/captive-core-pubnet.cfg
-    volumes:
-      - ./captive-core-pubnet.cfg:/captive-core-pubnet.cfg
+      - NETWORK=pubnet

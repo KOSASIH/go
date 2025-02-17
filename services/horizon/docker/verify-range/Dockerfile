@@ -1,14 +1,13 @@
-FROM ubuntu:20.04
+FROM ubuntu:22.04
 
-MAINTAINER Bartek Nowotarski <bartek@stellar.org>
-
+ARG GO_VERSION
 ARG STELLAR_CORE_VERSION 
 ENV STELLAR_CORE_VERSION=${STELLAR_CORE_VERSION:-*}
 # to remove tzdata interactive flow
 ENV DEBIAN_FRONTEND=noninteractive
 
 ADD dependencies /
-RUN ["chmod", "+x", "dependencies"]
+RUN ["chmod", "+x", "/dependencies"]
 RUN /dependencies
 
 ADD stellar-core.cfg /

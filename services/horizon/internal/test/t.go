@@ -18,7 +18,7 @@ import (
 	"github.com/stellar/go/support/render/hal"
 )
 
-// CoreSession returns a db.Session instance pointing at the stellar core test database
+// TODO - remove ref to core db once scenario tests are removed.
 func (t *T) CoreSession() *db.Session {
 	return &db.Session{
 		DB: t.CoreDB,
@@ -143,17 +143,7 @@ func (t *T) UnmarshalExtras(r io.Reader) map[string]string {
 func (t *T) LoadLedgerStatus() ledger.Status {
 	var next ledger.Status
 
-	err := t.CoreSession().GetRaw(t.Ctx, &next, `
-		SELECT
-			COALESCE(MAX(ledgerseq), 0) as core_latest
-		FROM ledgerheaders
-	`)
-
-	if err != nil {
-		panic(err)
-	}
-
-	err = t.HorizonSession().GetRaw(t.Ctx, &next, `
+	err := t.HorizonSession().GetRaw(t.Ctx, &next, `
 			SELECT
 				COALESCE(MIN(sequence), 0) as history_elder,
 				COALESCE(MAX(sequence), 0) as history_latest

@@ -24,14 +24,21 @@ func TestTrustLinesProcessorTestSuiteState(t *testing.T) {
 
 type TrustLinesProcessorTestSuiteState struct {
 	suite.Suite
-	ctx       context.Context
-	processor *TrustLinesProcessor
-	mockQ     *history.MockQTrustLines
+	ctx                              context.Context
+	processor                        *TrustLinesProcessor
+	mockQ                            *history.MockQTrustLines
+	mockTrustLinesBatchInsertBuilder *history.MockTrustLinesBatchInsertBuilder
 }
 
 func (s *TrustLinesProcessorTestSuiteState) SetupTest() {
 	s.ctx = context.Background()
 	s.mockQ = &history.MockQTrustLines{}
+
+	s.mockTrustLinesBatchInsertBuilder = &history.MockTrustLinesBatchInsertBuilder{}
+	s.mockQ.On("NewTrustLinesBatchInsertBuilder").Return(s.mockTrustLinesBatchInsertBuilder).Twice()
+	s.mockTrustLinesBatchInsertBuilder.On("Exec", s.ctx).Return(nil).Once()
+	s.mockTrustLinesBatchInsertBuilder.On("Len").Return(1).Maybe()
+
 	s.processor = NewTrustLinesProcessor(s.mockQ)
 }
 
@@ -59,6 +66,33 @@ func (s *TrustLinesProcessorTestSuiteState) TestCreateTrustLine() {
 		Flags:   xdr.Uint32(xdr.TrustLineFlagsAuthorizedFlag),
 	}
 
+	s.mockTrustLinesBatchInsertBuilder.On("Add", history.TrustLine{
+		AccountID:          trustLine.AccountId.Address(),
+		AssetType:          xdr.AssetTypeAssetTypeCreditAlphanum4,
+		AssetIssuer:        trustLineIssuer.Address(),
+		AssetCode:          "EUR",
+		Balance:            int64(trustLine.Balance),
+		LedgerKey:          "AAAAAQAAAAAdBJqAD9qPq+j2nRDdjdp5KVoUh8riPkNO9ato7BNs8wAAAAFFVVIAAAAAAGL8HQvQkbK2HA3WVjRrKmjX00fG8sLI7m0ERwJW/AX3",
+		Limit:              int64(trustLine.Limit),
+		LiquidityPoolID:    "",
+		BuyingLiabilities:  int64(trustLine.Liabilities().Buying),
+		SellingLiabilities: int64(trustLine.Liabilities().Selling),
+		Flags:              uint32(trustLine.Flags),
+		LastModifiedLedger: uint32(lastModifiedLedgerSeq),
+		Sponsor:            null.String{},
+	}).Return(nil).Once()
+
+	s.mockTrustLinesBatchInsertBuilder.On("Add", history.TrustLine{
+		AccountID:          poolShareTrustLine.AccountId.Address(),
+		AssetType:          xdr.AssetTypeAssetTypePoolShare,
+		Balance:            int64(poolShareTrustLine.Balance),
+		LedgerKey:          "AAAAAQAAAAC2LgFRDBZ3J52nLm30kq2iMgrO7dYzYAN3hvjtf1IHWgAAAAMBAgMEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+		Limit:              int64(poolShareTrustLine.Limit),
+		LiquidityPoolID:    "0102030400000000000000000000000000000000000000000000000000000000",
+		Flags:              uint32(poolShareTrustLine.Flags),
+		LastModifiedLedger: uint32(lastModifiedLedgerSeq),
+	}).Return(nil).Once()
+
 	err := s.processor.ProcessChange(s.ctx, ingest.Change{
 		Type: xdr.LedgerEntryTypeTrustline,
 		Pre:  nil,
@@ -84,43 +118,6 @@ func (s *TrustLinesProcessorTestSuiteState) TestCreateTrustLine() {
 		},
 	})
 	s.Assert().NoError(err)
-
-	s.mockQ.On(
-		"UpsertTrustLines",
-		s.ctx,
-		mock.AnythingOfType("[]history.TrustLine"),
-	).Run(func(args mock.Arguments) {
-		arg := args.Get(1).([]history.TrustLine)
-		s.Assert().ElementsMatch(
-			[]history.TrustLine{
-				{
-					AccountID:          trustLine.AccountId.Address(),
-					AssetType:          xdr.AssetTypeAssetTypeCreditAlphanum4,
-					AssetIssuer:        trustLineIssuer.Address(),
-					AssetCode:          "EUR",
-					Balance:            int64(trustLine.Balance),
-					LedgerKey:          "AAAAAQAAAAAdBJqAD9qPq+j2nRDdjdp5KVoUh8riPkNO9ato7BNs8wAAAAFFVVIAAAAAAGL8HQvQkbK2HA3WVjRrKmjX00fG8sLI7m0ERwJW/AX3",
-					Limit:              int64(trustLine.Limit),
-					LiquidityPoolID:    "",
-					BuyingLiabilities:  int64(trustLine.Liabilities().Buying),
-					SellingLiabilities: int64(trustLine.Liabilities().Selling),
-					Flags:              uint32(trustLine.Flags),
-					LastModifiedLedger: uint32(lastModifiedLedgerSeq),
-					Sponsor:            null.String{},
-				},
-				{
-					AccountID:          poolShareTrustLine.AccountId.Address(),
-					AssetType:          xdr.AssetTypeAssetTypePoolShare,
-					Balance:            int64(poolShareTrustLine.Balance),
-					LedgerKey:          "AAAAAQAAAAC2LgFRDBZ3J52nLm30kq2iMgrO7dYzYAN3hvjtf1IHWgAAAAMBAgMEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
-					Limit:              int64(poolShareTrustLine.Limit),
-					LiquidityPoolID:    "0102030400000000000000000000000000000000000000000000000000000000",
-					Flags:              uint32(poolShareTrustLine.Flags),
-					LastModifiedLedger: uint32(lastModifiedLedgerSeq),
-				},
-			},
-			arg)
-	}).Return(nil).Once()
 }
 
 func (s *TrustLinesProcessorTestSuiteState) TestCreateTrustLineUnauthorized() {
@@ -129,6 +126,23 @@ func (s *TrustLinesProcessorTestSuiteState) TestCreateTrustLineUnauthorized() {
 		Asset:     xdr.MustNewCreditAsset("EUR", trustLineIssuer.Address()).ToTrustLineAsset(),
 	}
 	lastModifiedLedgerSeq := xdr.Uint32(123)
+
+	s.mockTrustLinesBatchInsertBuilder.On("Add", history.TrustLine{
+		AccountID:          trustLine.AccountId.Address(),
+		AssetType:          xdr.AssetTypeAssetTypeCreditAlphanum4,
+		AssetIssuer:        trustLineIssuer.Address(),
+		AssetCode:          "EUR",
+		Balance:            int64(trustLine.Balance),
+		LedgerKey:          "AAAAAQAAAAAdBJqAD9qPq+j2nRDdjdp5KVoUh8riPkNO9ato7BNs8wAAAAFFVVIAAAAAAGL8HQvQkbK2HA3WVjRrKmjX00fG8sLI7m0ERwJW/AX3",
+		Limit:              int64(trustLine.Limit),
+		LiquidityPoolID:    "",
+		BuyingLiabilities:  int64(trustLine.Liabilities().Buying),
+		SellingLiabilities: int64(trustLine.Liabilities().Selling),
+		Flags:              uint32(trustLine.Flags),
+		LastModifiedLedger: uint32(lastModifiedLedgerSeq),
+		Sponsor:            null.String{},
+	}).Return(nil).Once()
+
 	err := s.processor.ProcessChange(s.ctx, ingest.Change{
 		Type: xdr.LedgerEntryTypeTrustline,
 		Pre:  nil,
@@ -141,28 +155,6 @@ func (s *TrustLinesProcessorTestSuiteState) TestCreateTrustLineUnauthorized() {
 		},
 	})
 	s.Assert().NoError(err)
-
-	s.mockQ.On(
-		"UpsertTrustLines",
-		s.ctx,
-		[]history.TrustLine{
-			{
-				AccountID:          trustLine.AccountId.Address(),
-				AssetType:          xdr.AssetTypeAssetTypeCreditAlphanum4,
-				AssetIssuer:        trustLineIssuer.Address(),
-				AssetCode:          "EUR",
-				Balance:            int64(trustLine.Balance),
-				LedgerKey:          "AAAAAQAAAAAdBJqAD9qPq+j2nRDdjdp5KVoUh8riPkNO9ato7BNs8wAAAAFFVVIAAAAAAGL8HQvQkbK2HA3WVjRrKmjX00fG8sLI7m0ERwJW/AX3",
-				Limit:              int64(trustLine.Limit),
-				LiquidityPoolID:    "",
-				BuyingLiabilities:  int64(trustLine.Liabilities().Buying),
-				SellingLiabilities: int64(trustLine.Liabilities().Selling),
-				Flags:              uint32(trustLine.Flags),
-				LastModifiedLedger: uint32(lastModifiedLedgerSeq),
-				Sponsor:            null.String{},
-			},
-		},
-	).Return(nil).Once()
 }
 
 func TestTrustLinesProcessorTestSuiteLedger(t *testing.T) {
@@ -171,14 +163,21 @@ func TestTrustLinesProcessorTestSuiteLedger(t *testing.T) {
 
 type TrustLinesProcessorTestSuiteLedger struct {
 	suite.Suite
-	ctx       context.Context
-	processor *TrustLinesProcessor
-	mockQ     *history.MockQTrustLines
+	ctx                              context.Context
+	processor                        *TrustLinesProcessor
+	mockQ                            *history.MockQTrustLines
+	mockTrustLinesBatchInsertBuilder *history.MockTrustLinesBatchInsertBuilder
 }
 
 func (s *TrustLinesProcessorTestSuiteLedger) SetupTest() {
 	s.ctx = context.Background()
 	s.mockQ = &history.MockQTrustLines{}
+
+	s.mockTrustLinesBatchInsertBuilder = &history.MockTrustLinesBatchInsertBuilder{}
+	s.mockQ.On("NewTrustLinesBatchInsertBuilder").Return(s.mockTrustLinesBatchInsertBuilder).Twice()
+	s.mockTrustLinesBatchInsertBuilder.On("Exec", s.ctx).Return(nil).Once()
+	s.mockTrustLinesBatchInsertBuilder.On("Len").Return(1).Maybe()
+
 	s.processor = NewTrustLinesProcessor(s.mockQ)
 }
 
@@ -222,124 +221,64 @@ func (s *TrustLinesProcessorTestSuiteLedger) TestInsertTrustLine() {
 	}
 	lastModifiedLedgerSeq := xdr.Uint32(1234)
 
-	err = s.processor.ProcessChange(s.ctx, ingest.Change{
-		Type: xdr.LedgerEntryTypeTrustline,
-		Pre:  nil,
-		Post: &xdr.LedgerEntry{
-			LastModifiedLedgerSeq: lastModifiedLedgerSeq,
-			Data: xdr.LedgerEntryData{
-				Type:      xdr.LedgerEntryTypeTrustline,
-				TrustLine: &trustLine,
-			},
-		},
-	})
-	s.Assert().NoError(err)
-
-	err = s.processor.ProcessChange(s.ctx, ingest.Change{
-		Type: xdr.LedgerEntryTypeTrustline,
-		Pre:  nil,
-		Post: &xdr.LedgerEntry{
-			LastModifiedLedgerSeq: lastModifiedLedgerSeq,
-			Data: xdr.LedgerEntryData{
-				Type:      xdr.LedgerEntryTypeTrustline,
-				TrustLine: &unauthorizedTrustline,
-			},
-		},
-	})
-	s.Assert().NoError(err)
-
-	updatedTrustLine := xdr.TrustLineEntry{
-		AccountId: xdr.MustAddress("GAOQJGUAB7NI7K7I62ORBXMN3J4SSWQUQ7FOEPSDJ322W2HMCNWPHXFB"),
-		Asset:     xdr.MustNewCreditAsset("EUR", trustLineIssuer.Address()).ToTrustLineAsset(),
-		Balance:   10,
-		Flags:     xdr.Uint32(xdr.TrustLineFlagsAuthorizedFlag),
-	}
-	updatedUnauthorizedTrustline := xdr.TrustLineEntry{
-		AccountId: xdr.MustAddress("GC3C4AKRBQLHOJ45U4XG35ESVWRDECWO5XLDGYADO6DPR3L7KIDVUMML"),
-		Asset:     xdr.MustNewCreditAsset("USD", trustLineIssuer.Address()).ToTrustLineAsset(),
-		Balance:   10,
-	}
-
-	err = s.processor.ProcessChange(s.ctx, ingest.Change{
-		Type: xdr.LedgerEntryTypeTrustline,
-		Pre: &xdr.LedgerEntry{
-			LastModifiedLedgerSeq: lastModifiedLedgerSeq,
-			Data: xdr.LedgerEntryData{
-				Type:      xdr.LedgerEntryTypeTrustline,
-				TrustLine: &trustLine,
-			},
-		},
-		Post: &xdr.LedgerEntry{
-			LastModifiedLedgerSeq: lastModifiedLedgerSeq,
-			Data: xdr.LedgerEntryData{
-				Type:      xdr.LedgerEntryTypeTrustline,
-				TrustLine: &updatedTrustLine,
-			},
-		},
-	})
-	s.Assert().NoError(err)
-
-	err = s.processor.ProcessChange(s.ctx, ingest.Change{
-		Type: xdr.LedgerEntryTypeTrustline,
-		Pre: &xdr.LedgerEntry{
-			LastModifiedLedgerSeq: lastModifiedLedgerSeq,
-			Data: xdr.LedgerEntryData{
-				Type:      xdr.LedgerEntryTypeTrustline,
-				TrustLine: &unauthorizedTrustline,
-			},
-		},
-		Post: &xdr.LedgerEntry{
-			LastModifiedLedgerSeq: lastModifiedLedgerSeq,
-			Data: xdr.LedgerEntryData{
-				Type:      xdr.LedgerEntryTypeTrustline,
-				TrustLine: &updatedUnauthorizedTrustline,
-			},
-		},
-	})
-	s.Assert().NoError(err)
-
-	s.mockQ.On(
-		"UpsertTrustLines",
-		s.ctx,
-		mock.AnythingOfType("[]history.TrustLine"),
-	).Run(func(args mock.Arguments) {
-		arg := args.Get(1).([]history.TrustLine)
-		s.Assert().ElementsMatch(
-			[]history.TrustLine{
-				{
-					AccountID:          updatedTrustLine.AccountId.Address(),
-					AssetType:          updatedTrustLine.Asset.Type,
-					AssetIssuer:        trustLineIssuer.Address(),
-					AssetCode:          "EUR",
-					Balance:            int64(updatedTrustLine.Balance),
-					LedgerKey:          "AAAAAQAAAAAdBJqAD9qPq+j2nRDdjdp5KVoUh8riPkNO9ato7BNs8wAAAAFFVVIAAAAAAGL8HQvQkbK2HA3WVjRrKmjX00fG8sLI7m0ERwJW/AX3",
-					Limit:              int64(updatedTrustLine.Limit),
-					LiquidityPoolID:    "",
-					BuyingLiabilities:  int64(updatedTrustLine.Liabilities().Buying),
-					SellingLiabilities: int64(updatedTrustLine.Liabilities().Selling),
-					Flags:              uint32(updatedTrustLine.Flags),
-					LastModifiedLedger: uint32(lastModifiedLedgerSeq),
-					Sponsor:            null.String{},
-				},
-				{
-					AccountID:          updatedUnauthorizedTrustline.AccountId.Address(),
-					AssetType:          updatedUnauthorizedTrustline.Asset.Type,
-					AssetIssuer:        trustLineIssuer.Address(),
-					AssetCode:          "USD",
-					Balance:            int64(updatedUnauthorizedTrustline.Balance),
-					LedgerKey:          "AAAAAQAAAAC2LgFRDBZ3J52nLm30kq2iMgrO7dYzYAN3hvjtf1IHWgAAAAFVU0QAAAAAAGL8HQvQkbK2HA3WVjRrKmjX00fG8sLI7m0ERwJW/AX3",
-					Limit:              int64(updatedUnauthorizedTrustline.Limit),
-					LiquidityPoolID:    "",
-					BuyingLiabilities:  int64(updatedUnauthorizedTrustline.Liabilities().Buying),
-					SellingLiabilities: int64(updatedUnauthorizedTrustline.Liabilities().Selling),
-					Flags:              uint32(updatedUnauthorizedTrustline.Flags),
-					LastModifiedLedger: uint32(lastModifiedLedgerSeq),
-					Sponsor:            null.String{},
-				},
-			},
-			arg,
-		)
+	s.mockTrustLinesBatchInsertBuilder.On("Add", history.TrustLine{
+		AccountID:          trustLine.AccountId.Address(),
+		AssetType:          trustLine.Asset.Type,
+		AssetIssuer:        trustLineIssuer.Address(),
+		AssetCode:          "EUR",
+		Balance:            int64(trustLine.Balance),
+		LedgerKey:          "AAAAAQAAAAAdBJqAD9qPq+j2nRDdjdp5KVoUh8riPkNO9ato7BNs8wAAAAFFVVIAAAAAAGL8HQvQkbK2HA3WVjRrKmjX00fG8sLI7m0ERwJW/AX3",
+		Limit:              int64(trustLine.Limit),
+		LiquidityPoolID:    "",
+		BuyingLiabilities:  int64(trustLine.Liabilities().Buying),
+		SellingLiabilities: int64(trustLine.Liabilities().Selling),
+		Flags:              uint32(trustLine.Flags),
+		LastModifiedLedger: uint32(lastModifiedLedgerSeq),
+		Sponsor:            null.String{},
 	}).Return(nil).Once()
+
+	s.mockTrustLinesBatchInsertBuilder.On("Add", history.TrustLine{
+		AccountID:          unauthorizedTrustline.AccountId.Address(),
+		AssetType:          unauthorizedTrustline.Asset.Type,
+		AssetIssuer:        trustLineIssuer.Address(),
+		AssetCode:          "USD",
+		Balance:            int64(unauthorizedTrustline.Balance),
+		LedgerKey:          "AAAAAQAAAAC2LgFRDBZ3J52nLm30kq2iMgrO7dYzYAN3hvjtf1IHWgAAAAFVU0QAAAAAAGL8HQvQkbK2HA3WVjRrKmjX00fG8sLI7m0ERwJW/AX3",
+		Limit:              int64(unauthorizedTrustline.Limit),
+		LiquidityPoolID:    "",
+		BuyingLiabilities:  int64(unauthorizedTrustline.Liabilities().Buying),
+		SellingLiabilities: int64(unauthorizedTrustline.Liabilities().Selling),
+		Flags:              uint32(unauthorizedTrustline.Flags),
+		LastModifiedLedger: uint32(lastModifiedLedgerSeq),
+		Sponsor:            null.String{},
+	}).Return(nil).Once()
+
+	err = s.processor.ProcessChange(s.ctx, ingest.Change{
+		Type: xdr.LedgerEntryTypeTrustline,
+		Pre:  nil,
+		Post: &xdr.LedgerEntry{
+			LastModifiedLedgerSeq: lastModifiedLedgerSeq,
+			Data: xdr.LedgerEntryData{
+				Type:      xdr.LedgerEntryTypeTrustline,
+				TrustLine: &trustLine,
+			},
+		},
+	})
+	s.Assert().NoError(err)
+
+	err = s.processor.ProcessChange(s.ctx, ingest.Change{
+		Type: xdr.LedgerEntryTypeTrustline,
+		Pre:  nil,
+		Post: &xdr.LedgerEntry{
+			LastModifiedLedgerSeq: lastModifiedLedgerSeq,
+			Data: xdr.LedgerEntryData{
+				Type:      xdr.LedgerEntryTypeTrustline,
+				TrustLine: &unauthorizedTrustline,
+			},
+		},
+	})
+	s.Assert().NoError(err)
+
 	s.Assert().NoError(s.processor.Commit(s.ctx))
 }
 
@@ -575,77 +514,6 @@ func (s *TrustLinesProcessorTestSuiteLedger) TestRemoveTrustLine() {
 		)
 	}).Return(int64(2), nil).Once()
 
-	s.Assert().NoError(s.processor.Commit(s.ctx))
-}
-
-func (s *TrustLinesProcessorTestSuiteLedger) TestProcessUpgradeChange() {
-	// add trust line
-	lastModifiedLedgerSeq := xdr.Uint32(1234)
-	trustLine := xdr.TrustLineEntry{
-		AccountId: xdr.MustAddress("GAOQJGUAB7NI7K7I62ORBXMN3J4SSWQUQ7FOEPSDJ322W2HMCNWPHXFB"),
-		Asset:     xdr.MustNewCreditAsset("EUR", trustLineIssuer.Address()).ToTrustLineAsset(),
-		Balance:   0,
-		Flags:     xdr.Uint32(xdr.TrustLineFlagsAuthorizedFlag),
-	}
-
-	err := s.processor.ProcessChange(s.ctx, ingest.Change{
-		Type: xdr.LedgerEntryTypeTrustline,
-		Post: &xdr.LedgerEntry{
-			LastModifiedLedgerSeq: lastModifiedLedgerSeq,
-			Data: xdr.LedgerEntryData{
-				Type:      xdr.LedgerEntryTypeTrustline,
-				TrustLine: &trustLine,
-			},
-		},
-	})
-	s.Assert().NoError(err)
-
-	updatedTrustLine := xdr.TrustLineEntry{
-		AccountId: xdr.MustAddress("GAOQJGUAB7NI7K7I62ORBXMN3J4SSWQUQ7FOEPSDJ322W2HMCNWPHXFB"),
-		Asset:     xdr.MustNewCreditAsset("EUR", trustLineIssuer.Address()).ToTrustLineAsset(),
-		Balance:   10,
-		Flags:     xdr.Uint32(xdr.TrustLineFlagsAuthorizedFlag),
-	}
-
-	err = s.processor.ProcessChange(s.ctx, ingest.Change{
-		Type: xdr.LedgerEntryTypeTrustline,
-		Pre: &xdr.LedgerEntry{
-			LastModifiedLedgerSeq: lastModifiedLedgerSeq,
-			Data: xdr.LedgerEntryData{
-				Type:      xdr.LedgerEntryTypeTrustline,
-				TrustLine: &trustLine,
-			},
-		},
-		Post: &xdr.LedgerEntry{
-			LastModifiedLedgerSeq: lastModifiedLedgerSeq,
-			Data: xdr.LedgerEntryData{
-				Type:      xdr.LedgerEntryTypeTrustline,
-				TrustLine: &updatedTrustLine,
-			},
-		},
-	})
-	s.Assert().NoError(err)
-
-	s.mockQ.On(
-		"UpsertTrustLines", s.ctx,
-		[]history.TrustLine{
-			{
-				AccountID:          updatedTrustLine.AccountId.Address(),
-				AssetType:          updatedTrustLine.Asset.Type,
-				AssetIssuer:        trustLineIssuer.Address(),
-				AssetCode:          "EUR",
-				Balance:            int64(updatedTrustLine.Balance),
-				LedgerKey:          "AAAAAQAAAAAdBJqAD9qPq+j2nRDdjdp5KVoUh8riPkNO9ato7BNs8wAAAAFFVVIAAAAAAGL8HQvQkbK2HA3WVjRrKmjX00fG8sLI7m0ERwJW/AX3",
-				Limit:              int64(updatedTrustLine.Limit),
-				LiquidityPoolID:    "",
-				BuyingLiabilities:  int64(updatedTrustLine.Liabilities().Buying),
-				SellingLiabilities: int64(updatedTrustLine.Liabilities().Selling),
-				Flags:              uint32(updatedTrustLine.Flags),
-				LastModifiedLedger: uint32(lastModifiedLedgerSeq),
-				Sponsor:            null.String{},
-			},
-		},
-	).Return(nil).Once()
 	s.Assert().NoError(s.processor.Commit(s.ctx))
 }
 

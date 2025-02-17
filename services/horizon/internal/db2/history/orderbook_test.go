@@ -18,7 +18,7 @@ func TestGetOrderBookSummaryRequiresTransaction(t *testing.T) {
 	_, err := q.GetOrderBookSummary(tt.Ctx, nativeAsset, eurAsset, 10)
 	assert.EqualError(t, err, "cannot be called outside of a transaction")
 
-	assert.NoError(t, q.Begin())
+	assert.NoError(t, q.Begin(tt.Ctx))
 	defer q.Rollback()
 
 	_, err = q.GetOrderBookSummary(tt.Ctx, nativeAsset, eurAsset, 10)
@@ -215,7 +215,7 @@ func TestGetOrderBookSummary(t *testing.T) {
 			assert.NoError(t, q.TruncateTables(tt.Ctx, []string{"offers"}))
 			assert.NoError(t, q.UpsertOffers(tt.Ctx, testCase.offers))
 
-			assert.NoError(t, q.BeginTx(&sql.TxOptions{
+			assert.NoError(t, q.BeginTx(tt.Ctx, &sql.TxOptions{
 				Isolation: sql.LevelRepeatableRead,
 				ReadOnly:  true,
 			}))
@@ -257,7 +257,7 @@ func TestGetOrderBookSummaryExcludesRemovedOffers(t *testing.T) {
 
 	assert.NoError(t, q.UpsertOffers(tt.Ctx, offers))
 
-	assert.NoError(t, q.BeginTx(&sql.TxOptions{
+	assert.NoError(t, q.BeginTx(tt.Ctx, &sql.TxOptions{
 		Isolation: sql.LevelRepeatableRead,
 		ReadOnly:  true,
 	}))
@@ -278,7 +278,7 @@ func TestGetOrderBookSummaryExcludesRemovedOffers(t *testing.T) {
 	}
 	assert.NoError(t, q.UpsertOffers(tt.Ctx, offersToDelete))
 
-	assert.NoError(t, q.BeginTx(&sql.TxOptions{
+	assert.NoError(t, q.BeginTx(tt.Ctx, &sql.TxOptions{
 		Isolation: sql.LevelRepeatableRead,
 		ReadOnly:  true,
 	}))
@@ -294,7 +294,7 @@ func TestGetOrderBookSummaryExcludesRemovedOffers(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, int64(len(offers)), count)
 
-	assert.NoError(t, q.BeginTx(&sql.TxOptions{
+	assert.NoError(t, q.BeginTx(tt.Ctx, &sql.TxOptions{
 		Isolation: sql.LevelRepeatableRead,
 		ReadOnly:  true,
 	}))

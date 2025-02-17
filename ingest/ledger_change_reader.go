@@ -25,9 +25,11 @@ type ledgerChangeReaderState int
 const (
 	// feeChangesState is active when LedgerChangeReader is reading fee changes.
 	feeChangesState ledgerChangeReaderState = iota
-	// feeChangesState is active when LedgerChangeReader is reading transaction meta changes.
+	// metaChangesState is active when LedgerChangeReader is reading transaction meta changes.
 	metaChangesState
-	// feeChangesState is active when LedgerChangeReader is reading upgrade changes.
+	// evictionChangesState is active when LedgerChangeReader is reading ledger entry evictions.
+	evictionChangesState
+	// upgradeChanges is active when LedgerChangeReader is reading upgrade changes.
 	upgradeChangesState
 )
 
@@ -72,6 +74,57 @@ func NewLedgerChangeReaderFromLedgerCloseMeta(networkPassphrase string, ledger x
 		LedgerTransactionReader: transactionReader,
 		state:                   feeChangesState,
 	}, nil
+}
+
+type compactingChangeReader struct {
+	input     ChangeReader
+	changes   []Change
+	compacted bool
+}
+
+func (c *compactingChangeReader) compact() error {
+	compactor := NewChangeCompactor()
+	for {
+		change, err := c.input.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		if err = compactor.AddChange(change); err != nil {
+			return err
+		}
+	}
+	c.changes = compactor.GetChanges()
+	c.compacted = true
+	return nil
+}
+
+func (c *compactingChangeReader) Read() (Change, error) {
+	if !c.compacted {
+		if err := c.compact(); err != nil {
+			return Change{}, err
+		}
+	}
+	if len(c.changes) == 0 {
+		return Change{}, io.EOF
+	}
+	change := c.changes[0]
+	c.changes = c.changes[1:]
+	return change, nil
+}
+
+func (c *compactingChangeReader) Close() error {
+	return c.input.Close()
+}
+
+// NewCompactingChangeReader wraps a given ChangeReader and returns a ChangeReader
+// which compacts all the the Changes extracted from the input.
+func NewCompactingChangeReader(input ChangeReader) ChangeReader {
+	return &compactingChangeReader{
+		input: input,
+	}
 }
 
 // Read returns the next change in the stream.
@@ -122,12 +175,41 @@ func (r *LedgerChangeReader) Read() (Change, error) {
 			r.pending = append(r.pending, metaChanges...)
 		}
 		return r.Read()
+
+	case evictionChangesState:
+		entries, err := r.lcm.EvictedPersistentLedgerEntries()
+		if err != nil {
+			return Change{}, err
+		}
+		changes := make([]Change, len(entries))
+		for i := range entries {
+			entry := entries[i]
+			// when a ledger entry is evicted it is removed from the ledger
+			changes[i] = Change{
+				Type:   entry.Data.Type,
+				Pre:    &entry,
+				Post:   nil,
+				Reason: LedgerEntryChangeReasonEviction,
+				Ledger: &r.lcm,
+			}
+		}
+		sortChanges(changes)
+		r.pending = append(r.pending, changes...)
+		r.state++
+		return r.Read()
+
 	case upgradeChangesState:
 		// Get upgrade changes
-		if r.upgradeIndex < len(r.LedgerTransactionReader.ledgerCloseMeta.V0.UpgradesProcessing) {
+		if r.upgradeIndex < len(r.LedgerTransactionReader.lcm.UpgradesProcessing()) {
 			changes := GetChangesFromLedgerEntryChanges(
-				r.LedgerTransactionReader.ledgerCloseMeta.V0.UpgradesProcessing[r.upgradeIndex].Changes,
+				r.LedgerTransactionReader.lcm.UpgradesProcessing()[r.upgradeIndex].Changes,
 			)
+			ledgerUpgrades := r.LedgerTransactionReader.lcm.UpgradesProcessing()
+			for i := range changes {
+				changes[i].Reason = LedgerEntryChangeReasonUpgrade
+				changes[i].Ledger = &r.lcm
+				changes[i].LedgerUpgrade = &ledgerUpgrades[r.upgradeIndex].Upgrade
+			}
 			r.pending = append(r.pending, changes...)
 			r.upgradeIndex++
 			return r.Read()

@@ -140,8 +140,46 @@ This pauses the state machine for 10 seconds then tries again, in hopes that a n
 **Next state**: [`start`](#start-state)
 
 
-# Ingestion
-TODO
+# Reingestion
+Horizon supports running reingestion by executing a sub command `db reingest range <from_ledger> <to_ledger>` which will execute as an o/s process and will be synchronous, exiting the process only after the complete reingestion range is finished or an error is encountered.
+
+By default this sub-command will attempt to use captive core configuration in the form of stellar core binary(`--stellar-core-binary-path`) and stellar core config(`--captive-core-config-path`) to obtain ledger tx meta from a stellar network to be ingested. 
+
+The `db reingest range` sub-command can optionally be configured to consume pre-computed ledger tx meta files from a Google Cloud Storage(GCS) location instead of running captive core on host machine. 
+Pre-requirements: 
+  - Have a GCS account.
+  - Run the [ledgerexporter] to publish ledger tx meta files to your GCS bucket location.
+Run the `db reingest` sub-command, configured to import tx meta from your GCS bucket:
+  ```$ DATABASE_URL=<your db host dsn> \
+     NETWORK=testnet \
+     stellar-horizon db reingest range \
+		   --parallel-workers 2 \
+		   --ledgerbackend "datastore" \
+		   --datastore-config "config.storagebackend.toml" \
+       100 200
+  ```  
+Notice, even though we no longer need to provide stellar-core related config for binary or config file, we do still need to provide network related config, using convenience parameter `NETWORK=testnet|pubnet` or directly with `NETWORK_PASSPHRASE` and `HISTORY_ARCHIVE_URLS`
+
+The `--datastore-config` must point to a new toml config file that will provide the necessary parameters for ingestion to work with remote GCS storage.
+
+example config toml:
+```
+# Datastore Configuration
+[datastore_config]
+# Specifies the type of datastore. 
+# Currently, only Google Cloud Storage (GCS) is supported.
+type = "GCS"
+
+[datastore_config.params]
+# The Google Cloud Storage bucket path for storing data, with optional subpaths for organization.
+destination_bucket_path = "path/to/my/bucket"
+
+[datastore_config.schema]
+# Configuration for data organization of the remote files
+ledgers_per_file = 1          # Number of ledgers stored in each file.
+files_per_partition = 64000   # Number of files per partition/directory.
+
+```
 
 # Range Preparation
 TODO: See `maybePrepareRange`

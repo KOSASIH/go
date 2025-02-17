@@ -10,7 +10,7 @@ var serveCmd = &cobra.Command{
 	Short: "run horizon server",
 	Long:  "serve initializes then starts the horizon HTTP server",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		app, err := horizon.NewAppFromFlags(config, flags)
+		app, err := horizon.NewAppFromFlags(globalConfig, globalFlags)
 		if err != nil {
 			return err
 		}

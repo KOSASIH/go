@@ -145,6 +145,9 @@ type Client struct {
 	AppVersion     string
 	horizonTimeout time.Duration
 
+	// Headers allows specifying additional HTTP headers for requests made by the client.
+	Headers map[string]string
+
 	// clock is a Clock returning the current time.
 	clock *clock.Clock
 }
@@ -191,6 +194,11 @@ type ClientInterface interface {
 	SubmitTransactionWithOptions(transaction *txnbuild.Transaction, opts SubmitTxOpts) (hProtocol.Transaction, error)
 	SubmitFeeBumpTransaction(transaction *txnbuild.FeeBumpTransaction) (hProtocol.Transaction, error)
 	SubmitTransaction(transaction *txnbuild.Transaction) (hProtocol.Transaction, error)
+	AsyncSubmitTransactionXDR(transactionXdr string) (hProtocol.AsyncTransactionSubmissionResponse, error)
+	AsyncSubmitFeeBumpTransactionWithOptions(transaction *txnbuild.FeeBumpTransaction, opts SubmitTxOpts) (hProtocol.AsyncTransactionSubmissionResponse, error)
+	AsyncSubmitTransactionWithOptions(transaction *txnbuild.Transaction, opts SubmitTxOpts) (hProtocol.AsyncTransactionSubmissionResponse, error)
+	AsyncSubmitFeeBumpTransaction(transaction *txnbuild.FeeBumpTransaction) (hProtocol.AsyncTransactionSubmissionResponse, error)
+	AsyncSubmitTransaction(transaction *txnbuild.Transaction) (hProtocol.AsyncTransactionSubmissionResponse, error)
 	Transactions(request TransactionRequest) (hProtocol.TransactionsPage, error)
 	TransactionDetail(txHash string) (hProtocol.Transaction, error)
 	OrderBook(request OrderBookRequest) (hProtocol.OrderBookSummary, error)

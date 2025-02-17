@@ -122,7 +122,14 @@ enum LedgerUpgradeType
     LEDGER_UPGRADE_BASE_FEE = 2,
     LEDGER_UPGRADE_MAX_TX_SET_SIZE = 3,
     LEDGER_UPGRADE_BASE_RESERVE = 4,
-    LEDGER_UPGRADE_FLAGS = 5
+    LEDGER_UPGRADE_FLAGS = 5,
+    LEDGER_UPGRADE_CONFIG = 6,
+    LEDGER_UPGRADE_MAX_SOROBAN_TX_SET_SIZE = 7
+};
+
+struct ConfigUpgradeSetKey {
+    Hash contractID;
+    Hash contentHash;
 };
 
 union LedgerUpgrade switch (LedgerUpgradeType type)
@@ -137,43 +144,17 @@ case LEDGER_UPGRADE_BASE_RESERVE:
     uint32 newBaseReserve; // update baseReserve
 case LEDGER_UPGRADE_FLAGS:
     uint32 newFlags; // update flags
+case LEDGER_UPGRADE_CONFIG:
+    // Update arbitrary `ConfigSetting` entries identified by the key.
+    ConfigUpgradeSetKey newConfig;
+case LEDGER_UPGRADE_MAX_SOROBAN_TX_SET_SIZE:
+    // Update ConfigSettingContractExecutionLanesV0.ledgerMaxTxCount without
+    // using `LEDGER_UPGRADE_CONFIG`.
+    uint32 newMaxSorobanTxSetSize;
 };
 
-/* Entries used to define the bucket list */
-enum BucketEntryType
-{
-    METAENTRY =
-        -1, // At-and-after protocol 11: bucket metadata, should come first.
-    LIVEENTRY = 0, // Before protocol 11: created-or-updated;
-                   // At-and-after protocol 11: only updated.
-    DEADENTRY = 1,
-    INITENTRY = 2 // At-and-after protocol 11: only created.
-};
-
-struct BucketMetadata
-{
-    // Indicates the protocol version used to create / merge this bucket.
-    uint32 ledgerVersion;
-
-    // reserved for future use
-    union switch (int v)
-    {
-    case 0:
-        void;
-    }
-    ext;
-};
-
-union BucketEntry switch (BucketEntryType type)
-{
-case LIVEENTRY:
-case INITENTRY:
-    LedgerEntry liveEntry;
-
-case DEADENTRY:
-    LedgerKey deadEntry;
-case METAENTRY:
-    BucketMetadata metaEntry;
+struct ConfigUpgradeSet {
+    ConfigSettingEntry updatedEntry<>;
 };
 
 enum TxSetComponentType
@@ -348,6 +329,118 @@ struct TransactionMetaV2
                                         // applied if any
 };
 
+enum ContractEventType
+{
+    SYSTEM = 0,
+    CONTRACT = 1,
+    DIAGNOSTIC = 2
+};
+
+struct ContractEvent
+{
+    // We can use this to add more fields, or because it
+    // is first, to change ContractEvent into a union.
+    ExtensionPoint ext;
+
+    Hash* contractID;
+    ContractEventType type;
+
+    union switch (int v)
+    {
+    case 0:
+        struct
+        {
+            SCVal topics<>;
+            SCVal data;
+        } v0;
+    }
+    body;
+};
+
+struct DiagnosticEvent
+{
+    bool inSuccessfulContractCall;
+    ContractEvent event;
+};
+
+typedef DiagnosticEvent DiagnosticEvents<>;
+
+struct SorobanTransactionMetaExtV1
+{
+    ExtensionPoint ext;
+
+    // The following are the components of the overall Soroban resource fee
+    // charged for the transaction.
+    // The following relation holds:
+    // `resourceFeeCharged = totalNonRefundableResourceFeeCharged + totalRefundableResourceFeeCharged`
+    // where `resourceFeeCharged` is the overall fee charged for the 
+    // transaction. Also, `resourceFeeCharged` <= `sorobanData.resourceFee` 
+    // i.e.we never charge more than the declared resource fee.
+    // The inclusion fee for charged the Soroban transaction can be found using 
+    // the following equation:
+    // `result.feeCharged = resourceFeeCharged + inclusionFeeCharged`.
+
+    // Total amount (in stroops) that has been charged for non-refundable
+    // Soroban resources.
+    // Non-refundable resources are charged based on the usage declared in
+    // the transaction envelope (such as `instructions`, `readBytes` etc.) and 
+    // is charged regardless of the success of the transaction.
+    int64 totalNonRefundableResourceFeeCharged;
+    // Total amount (in stroops) that has been charged for refundable
+    // Soroban resource fees.
+    // Currently this comprises the rent fee (`rentFeeCharged`) and the
+    // fee for the events and return value.
+    // Refundable resources are charged based on the actual resources usage.
+    // Since currently refundable resources are only used for the successful
+    // transactions, this will be `0` for failed transactions.
+    int64 totalRefundableResourceFeeCharged;
+    // Amount (in stroops) that has been charged for rent.
+    // This is a part of `totalNonRefundableResourceFeeCharged`.
+    int64 rentFeeCharged;
+};
+
+union SorobanTransactionMetaExt switch (int v)
+{
+case 0:
+    void;
+case 1:
+    SorobanTransactionMetaExtV1 v1;
+};
+
+struct SorobanTransactionMeta 
+{
+    SorobanTransactionMetaExt ext;
+
+    ContractEvent events<>;             // custom events populated by the
+                                        // contracts themselves.
+    SCVal returnValue;                  // return value of the host fn invocation
+
+    // Diagnostics events that are not hashed.
+    // This will contain all contract and diagnostic events. Even ones
+    // that were emitted in a failed contract call.
+    DiagnosticEvent diagnosticEvents<>;
+};
+
+struct TransactionMetaV3
+{
+    ExtensionPoint ext;
+
+    LedgerEntryChanges txChangesBefore;  // tx level changes before operations
+                                         // are applied if any
+    OperationMeta operations<>;          // meta for each operation
+    LedgerEntryChanges txChangesAfter;   // tx level changes after operations are
+                                         // applied if any
+    SorobanTransactionMeta* sorobanMeta; // Soroban-specific meta (only for 
+                                         // Soroban transactions).
+};
+
+// This is in Stellar-ledger.x to due to a circular dependency 
+struct InvokeHostFunctionSuccessPreImage
+{
+    SCVal returnValue;
+    ContractEvent events<>;
+};
+
 // this is the meta produced when applying transactions
 // it does not include pre-apply updates such as fees
 union TransactionMeta switch (int v)
@@ -358,6 +451,8 @@ case 1:
     TransactionMetaV1 v1;
 case 2:
     TransactionMetaV2 v2;
+case 3:
+    TransactionMetaV3 v3;
 };
 
 // This struct groups together changes on a per transaction basis
@@ -396,8 +491,24 @@ struct LedgerCloseMetaV0
     SCPHistoryEntry scpInfo<>;
 };
 
+struct LedgerCloseMetaExtV1
+{
+    ExtensionPoint ext;
+    int64 sorobanFeeWrite1KB;
+};
+
+union LedgerCloseMetaExt switch (int v)
+{
+case 0:
+    void;
+case 1:
+    LedgerCloseMetaExtV1 v1;
+};
+
 struct LedgerCloseMetaV1
 {
+    LedgerCloseMetaExt ext;
+
     LedgerHeaderHistoryEntry ledgerHeader;
 
     GeneralizedTransactionSet txSet;
@@ -412,6 +523,17 @@ struct LedgerCloseMetaV1
 
     // other misc information attached to the ledger close
     SCPHistoryEntry scpInfo<>;
+
+    // Size in bytes of BucketList, to support downstream
+    // systems calculating storage fees correctly.
+    uint64 totalByteSizeOfBucketList;
+
+    // Temp keys that are being evicted at this ledger.
+    LedgerKey evictedTemporaryLedgerKeys<>;
+
+    // Archived restorable ledger entries that are being
+    // evicted at this ledger.
+    LedgerEntry evictedPersistentLedgerEntries<>;
 };
 
 union LedgerCloseMeta switch (int v)

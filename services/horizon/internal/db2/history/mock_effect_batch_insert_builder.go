@@ -3,6 +3,8 @@ package history
 import (
 	"context"
 
+	"github.com/stellar/go/support/db"
+
 	"github.com/guregu/null"
 	"github.com/stretchr/testify/mock"
 )
@@ -13,15 +15,15 @@ type MockEffectBatchInsertBuilder struct {
 }
 
 // Add mock
-func (m *MockEffectBatchInsertBuilder) Add(ctx context.Context,
-	accountID int64,
+func (m *MockEffectBatchInsertBuilder) Add(
+	accountID FutureAccountID,
 	muxedAccount null.String,
 	operationID int64,
 	order uint32,
 	effectType EffectType,
 	details []byte,
 ) error {
-	a := m.Called(ctx,
+	a := m.Called(
 		accountID,
 		muxedAccount,
 		operationID,
@@ -33,7 +35,7 @@ func (m *MockEffectBatchInsertBuilder) Add(ctx context.Context,
 }
 
 // Exec mock
-func (m *MockEffectBatchInsertBuilder) Exec(ctx context.Context) error {
-	a := m.Called(ctx)
+func (m *MockEffectBatchInsertBuilder) Exec(ctx context.Context, session db.SessionInterface) error {
+	a := m.Called(ctx, session)
 	return a.Error(0)
 }

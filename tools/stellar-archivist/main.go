@@ -51,7 +51,7 @@ type Options struct {
 	Debug       bool
 	Trace       bool
 	CommandOpts historyarchive.CommandOptions
-	ConnectOpts historyarchive.ConnectOptions
+	ConnectOpts historyarchive.ArchiveOptions
 }
 
 func (opts *Options) SetRange(srcArch *historyarchive.Archive, dstArch *historyarchive.Archive) {

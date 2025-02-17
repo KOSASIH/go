@@ -13,6 +13,7 @@ import (
 type hungerRow struct {
 	Name        string `db:"name"`
 	HungerLevel string `db:"hunger_level"`
+	JsonValue   string `db:"json_value"`
 }
 
 type invalidHungerRow struct {

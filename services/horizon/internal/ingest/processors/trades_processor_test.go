@@ -10,18 +10,23 @@ import (
 
 	"github.com/guregu/null"
 
-	"github.com/stellar/go/ingest"
-	"github.com/stellar/go/services/horizon/internal/db2/history"
-	"github.com/stellar/go/toid"
-	"github.com/stellar/go/xdr"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/suite"
+
+	"github.com/stellar/go/ingest"
+	"github.com/stellar/go/services/horizon/internal/db2/history"
+	"github.com/stellar/go/support/db"
+	"github.com/stellar/go/toid"
+	"github.com/stellar/go/xdr"
 )
 
 type TradeProcessorTestSuiteLedger struct {
 	suite.Suite
 	processor              *TradeProcessor
-	mockQ                  *history.MockQTrades
+	mockSession            *db.MockSession
+	accountLoader          history.AccountLoaderStub
+	lpLoader               history.LiquidityPoolLoaderStub
+	assetLoader            history.AssetLoaderStub
 	mockBatchInsertBuilder *history.MockTradeBatchInsertBuilder
 
 	unmuxedSourceAccount       xdr.AccountId
@@ -43,9 +48,10 @@ type TradeProcessorTestSuiteLedger struct {
 
 	lpToID             map[xdr.PoolId]int64
 	unmuxedAccountToID map[string]int64
-	assetToID          map[string]history.Asset
+	assetToID          map[history.AssetKey]history.Asset
 
 	txs []ingest.LedgerTransaction
+	lcm xdr.LedgerCloseMeta
 }
 
 func TestTradeProcessorTestSuiteLedger(t *testing.T) {
@@ -53,7 +59,6 @@ func TestTradeProcessorTestSuiteLedger(t *testing.T) {
 }
 
 func (s *TradeProcessorTestSuiteLedger) SetupTest() {
-	s.mockQ = &history.MockQTrades{}
 	s.mockBatchInsertBuilder = &history.MockTradeBatchInsertBuilder{}
 
 	s.unmuxedSourceAccount = xdr.MustAddress("GAUJETIZVEP2NRYLUESJ3LS66NVCEGMON4UDCBCSBEVPIID773P2W6AY")
@@ -163,7 +168,7 @@ func (s *TradeProcessorTestSuiteLedger) SetupTest() {
 		s.unmuxedSourceAccount.Address():   1000,
 		s.unmuxedOpSourceAccount.Address(): 1001,
 	}
-	s.assetToID = map[string]history.Asset{}
+	s.assetToID = map[history.AssetKey]history.Asset{}
 	s.allTrades = []xdr.ClaimAtom{
 		s.strictReceiveTrade,
 		s.strictSendTrade,
@@ -188,42 +193,51 @@ func (s *TradeProcessorTestSuiteLedger) SetupTest() {
 			s.sellPrices = append(s.sellPrices, xdr.Price{N: xdr.Int32(trade.AmountBought()), D: xdr.Int32(trade.AmountSold())})
 		}
 		if i%2 == 0 {
-			s.assetToID[trade.AssetSold().String()] = history.Asset{ID: int64(10000 + i)}
-			s.assetToID[trade.AssetBought().String()] = history.Asset{ID: int64(100 + i)}
+			s.assetToID[history.AssetKeyFromXDR(trade.AssetSold())] = history.Asset{ID: int64(10000 + i)}
+			s.assetToID[history.AssetKeyFromXDR(trade.AssetBought())] = history.Asset{ID: int64(100 + i)}
 		} else {
-			s.assetToID[trade.AssetSold().String()] = history.Asset{ID: int64(100 + i)}
-			s.assetToID[trade.AssetBought().String()] = history.Asset{ID: int64(10000 + i)}
+			s.assetToID[history.AssetKeyFromXDR(trade.AssetSold())] = history.Asset{ID: int64(100 + i)}
+			s.assetToID[history.AssetKeyFromXDR(trade.AssetBought())] = history.Asset{ID: int64(10000 + i)}
 		}
 		s.assets = append(s.assets, trade.AssetSold(), trade.AssetBought())
 	}
 
-	s.processor = NewTradeProcessor(
-		s.mockQ,
-		xdr.LedgerHeaderHistoryEntry{
-			Header: xdr.LedgerHeader{
-				LedgerSeq: 100,
+	s.lcm = xdr.LedgerCloseMeta{
+		V0: &xdr.LedgerCloseMetaV0{
+			LedgerHeader: xdr.LedgerHeaderHistoryEntry{
+				Header: xdr.LedgerHeader{
+					LedgerSeq: xdr.Uint32(100),
+				},
 			},
 		},
+	}
+
+	s.accountLoader = history.NewAccountLoaderStub()
+	s.assetLoader = history.NewAssetLoaderStub()
+	s.lpLoader = history.NewLiquidityPoolLoaderStub()
+	s.processor = NewTradeProcessor(
+		s.accountLoader.Loader,
+		s.lpLoader.Loader,
+		s.assetLoader.Loader,
+		s.mockBatchInsertBuilder,
 	)
 }
 
 func (s *TradeProcessorTestSuiteLedger) TearDownTest() {
-	s.mockQ.AssertExpectations(s.T())
 	s.mockBatchInsertBuilder.AssertExpectations(s.T())
 }
 
 func (s *TradeProcessorTestSuiteLedger) TestIgnoreFailedTransactions() {
 	ctx := context.Background()
-	err := s.processor.ProcessTransaction(ctx, createTransaction(false, 1))
+	err := s.processor.ProcessTransaction(s.lcm, createTransaction(false, 1, 2))
 	s.Assert().NoError(err)
 
-	err = s.processor.Commit(ctx)
+	err = s.processor.Flush(ctx, s.mockSession)
 	s.Assert().NoError(err)
 }
 
-func (s *TradeProcessorTestSuiteLedger) mockReadTradeTransactions(
-	ledger xdr.LedgerHeaderHistoryEntry,
-) []history.InsertTrade {
+func (s *TradeProcessorTestSuiteLedger) mockReadTradeTransactions() []history.InsertTrade {
+	ledger := s.lcm.LedgerHeaderHistoryEntry()
 	closeTime := time.Unix(int64(ledger.Header.ScpValue.CloseTime), 0).UTC()
 	inserts := []history.InsertTrade{
 		{
@@ -232,11 +246,11 @@ func (s *TradeProcessorTestSuiteLedger) mockReadTradeTransactions(
 			LedgerCloseTime:    closeTime,
 			BaseAmount:         int64(s.strictReceiveTrade.AmountBought()),
 			BaseAccountID:      null.IntFrom(s.unmuxedAccountToID[s.unmuxedOpSourceAccount.Address()]),
-			BaseAssetID:        s.assetToID[s.strictReceiveTrade.AssetBought().String()].ID,
+			BaseAssetID:        s.assetToID[history.AssetKeyFromXDR(s.strictReceiveTrade.AssetBought())].ID,
 			BaseOfferID:        null.IntFrom(EncodeOfferId(uint64(toid.New(int32(ledger.Header.LedgerSeq), 1, 2).ToInt64()), TOIDType)),
 			CounterAmount:      int64(s.strictReceiveTrade.AmountSold()),
 			CounterAccountID:   null.IntFrom(s.unmuxedAccountToID[s.strictReceiveTrade.SellerId().Address()]),
-			CounterAssetID:     s.assetToID[s.strictReceiveTrade.AssetSold().String()].ID,
+			CounterAssetID:     s.assetToID[history.AssetKeyFromXDR(s.strictReceiveTrade.AssetSold())].ID,
 			CounterOfferID:     null.IntFrom(int64(s.strictReceiveTrade.OfferId())),
 			BaseIsSeller:       false,
 			BaseIsExact:        null.BoolFrom(false),
@@ -250,11 +264,11 @@ func (s *TradeProcessorTestSuiteLedger) mockReadTradeTransactions(
 			LedgerCloseTime:    closeTime,
 			CounterAmount:      int64(s.strictSendTrade.AmountBought()),
 			CounterAccountID:   null.IntFrom(s.unmuxedAccountToID[s.unmuxedOpSourceAccount.Address()]),
-			CounterAssetID:     s.assetToID[s.strictSendTrade.AssetBought().String()].ID,
+			CounterAssetID:     s.assetToID[history.AssetKeyFromXDR(s.strictSendTrade.AssetBought())].ID,
 			CounterOfferID:     null.IntFrom(EncodeOfferId(uint64(toid.New(int32(ledger.Header.LedgerSeq), 1, 3).ToInt64()), TOIDType)),
 			BaseAmount:         int64(s.strictSendTrade.AmountSold()),
 			BaseAccountID:      null.IntFrom(s.unmuxedAccountToID[s.strictSendTrade.SellerId().Address()]),
-			BaseAssetID:        s.assetToID[s.strictSendTrade.AssetSold().String()].ID,
+			BaseAssetID:        s.assetToID[history.AssetKeyFromXDR(s.strictSendTrade.AssetSold())].ID,
 			BaseIsSeller:       true,
 			BaseIsExact:        null.BoolFrom(false),
 			BaseOfferID:        null.IntFrom(int64(s.strictSendTrade.OfferId())),
@@ -269,10 +283,10 @@ func (s *TradeProcessorTestSuiteLedger) mockReadTradeTransactions(
 			BaseOfferID:        null.IntFrom(879136),
 			BaseAmount:         int64(s.buyOfferTrade.AmountBought()),
 			BaseAccountID:      null.IntFrom(s.unmuxedAccountToID[s.unmuxedOpSourceAccount.Address()]),
-			BaseAssetID:        s.assetToID[s.buyOfferTrade.AssetBought().String()].ID,
+			BaseAssetID:        s.assetToID[history.AssetKeyFromXDR(s.buyOfferTrade.AssetBought())].ID,
 			CounterAmount:      int64(s.buyOfferTrade.AmountSold()),
 			CounterAccountID:   null.IntFrom(s.unmuxedAccountToID[s.buyOfferTrade.SellerId().Address()]),
-			CounterAssetID:     s.assetToID[s.buyOfferTrade.AssetSold().String()].ID,
+			CounterAssetID:     s.assetToID[history.AssetKeyFromXDR(s.buyOfferTrade.AssetSold())].ID,
 			BaseIsSeller:       false,
 			CounterOfferID:     null.IntFrom(int64(s.buyOfferTrade.OfferId())),
 			PriceN:             int64(s.sellPrices[2].D),
@@ -284,12 +298,12 @@ func (s *TradeProcessorTestSuiteLedger) mockReadTradeTransactions(
 			Order:              2,
 			LedgerCloseTime:    closeTime,
 			CounterAmount:      int64(s.sellOfferTrade.AmountBought()),
-			CounterAssetID:     s.assetToID[s.sellOfferTrade.AssetBought().String()].ID,
+			CounterAssetID:     s.assetToID[history.AssetKeyFromXDR(s.sellOfferTrade.AssetBought())].ID,
 			CounterAccountID:   null.IntFrom(s.unmuxedAccountToID[s.unmuxedOpSourceAccount.Address()]),
 			CounterOfferID:     null.IntFrom(EncodeOfferId(uint64(toid.New(int32(ledger.Header.LedgerSeq), 1, 5).ToInt64()), TOIDType)),
 			BaseAmount:         int64(s.sellOfferTrade.AmountSold()),
 			BaseAccountID:      null.IntFrom(s.unmuxedAccountToID[s.sellOfferTrade.SellerId().Address()]),
-			BaseAssetID:        s.assetToID[s.sellOfferTrade.AssetSold().String()].ID,
+			BaseAssetID:        s.assetToID[history.AssetKeyFromXDR(s.sellOfferTrade.AssetSold())].ID,
 			BaseIsSeller:       true,
 			BaseOfferID:        null.IntFrom(int64(s.sellOfferTrade.OfferId())),
 			PriceN:             int64(s.sellPrices[3].N),
@@ -301,12 +315,12 @@ func (s *TradeProcessorTestSuiteLedger) mockReadTradeTransactions(
 			Order:              0,
 			LedgerCloseTime:    closeTime,
 			BaseAmount:         int64(s.passiveSellOfferTrade.AmountBought()),
-			BaseAssetID:        s.assetToID[s.passiveSellOfferTrade.AssetBought().String()].ID,
+			BaseAssetID:        s.assetToID[history.AssetKeyFromXDR(s.passiveSellOfferTrade.AssetBought())].ID,
 			BaseAccountID:      null.IntFrom(s.unmuxedAccountToID[s.unmuxedSourceAccount.Address()]),
 			BaseOfferID:        null.IntFrom(EncodeOfferId(uint64(toid.New(int32(ledger.Header.LedgerSeq), 1, 6).ToInt64()), TOIDType)),
 			CounterAmount:      int64(s.passiveSellOfferTrade.AmountSold()),
 			CounterAccountID:   null.IntFrom(s.unmuxedAccountToID[s.passiveSellOfferTrade.SellerId().Address()]),
-			CounterAssetID:     s.assetToID[s.passiveSellOfferTrade.AssetSold().String()].ID,
+			CounterAssetID:     s.assetToID[history.AssetKeyFromXDR(s.passiveSellOfferTrade.AssetSold())].ID,
 			BaseIsSeller:       false,
 			CounterOfferID:     null.IntFrom(int64(s.passiveSellOfferTrade.OfferId())),
 			PriceN:             int64(s.sellPrices[4].D),
@@ -320,12 +334,12 @@ func (s *TradeProcessorTestSuiteLedger) mockReadTradeTransactions(
 			LedgerCloseTime:    closeTime,
 
 			CounterAmount:    int64(s.otherPassiveSellOfferTrade.AmountBought()),
-			CounterAssetID:   s.assetToID[s.otherPassiveSellOfferTrade.AssetBought().String()].ID,
+			CounterAssetID:   s.assetToID[history.AssetKeyFromXDR(s.otherPassiveSellOfferTrade.AssetBought())].ID,
 			CounterAccountID: null.IntFrom(s.unmuxedAccountToID[s.unmuxedOpSourceAccount.Address()]),
 			CounterOfferID:   null.IntFrom(EncodeOfferId(uint64(toid.New(int32(ledger.Header.LedgerSeq), 1, 7).ToInt64()), TOIDType)),
 			BaseAmount:       int64(s.otherPassiveSellOfferTrade.AmountSold()),
 			BaseAccountID:    null.IntFrom(s.unmuxedAccountToID[s.otherPassiveSellOfferTrade.SellerId().Address()]),
-			BaseAssetID:      s.assetToID[s.otherPassiveSellOfferTrade.AssetSold().String()].ID,
+			BaseAssetID:      s.assetToID[history.AssetKeyFromXDR(s.otherPassiveSellOfferTrade.AssetSold())].ID,
 			BaseIsSeller:     true,
 			BaseOfferID:      null.IntFrom(int64(s.otherPassiveSellOfferTrade.OfferId())),
 			PriceN:           int64(s.sellPrices[5].N),
@@ -337,12 +351,12 @@ func (s *TradeProcessorTestSuiteLedger) mockReadTradeTransactions(
 			Order:                  1,
 			LedgerCloseTime:        closeTime,
 			BaseAmount:             int64(s.strictReceiveTradeLP.AmountBought()),
-			BaseAssetID:            s.assetToID[s.strictReceiveTradeLP.AssetBought().String()].ID,
+			BaseAssetID:            s.assetToID[history.AssetKeyFromXDR(s.strictReceiveTradeLP.AssetBought())].ID,
 			BaseAccountID:          null.IntFrom(s.unmuxedAccountToID[s.unmuxedOpSourceAccount.Address()]),
 			BaseOfferID:            null.IntFrom(EncodeOfferId(uint64(toid.New(int32(ledger.Header.LedgerSeq), 1, 8).ToInt64()), TOIDType)),
 			CounterAmount:          int64(s.strictReceiveTradeLP.AmountSold()),
 			CounterLiquidityPoolID: null.IntFrom(s.lpToID[s.strictReceiveTradeLP.MustLiquidityPool().LiquidityPoolId]),
-			CounterAssetID:         s.assetToID[s.strictReceiveTradeLP.AssetSold().String()].ID,
+			CounterAssetID:         s.assetToID[history.AssetKeyFromXDR(s.strictReceiveTradeLP.AssetSold())].ID,
 			BaseIsSeller:           false,
 			BaseIsExact:            null.BoolFrom(false),
 			LiquidityPoolFee:       null.IntFrom(int64(xdr.LiquidityPoolFeeV18)),
@@ -356,12 +370,12 @@ func (s *TradeProcessorTestSuiteLedger) mockReadTradeTransactions(
 			Order:               0,
 			LedgerCloseTime:     closeTime,
 			CounterAmount:       int64(s.strictSendTradeLP.AmountBought()),
-			CounterAssetID:      s.assetToID[s.strictSendTradeLP.AssetBought().String()].ID,
+			CounterAssetID:      s.assetToID[history.AssetKeyFromXDR(s.strictSendTradeLP.AssetBought())].ID,
 			CounterAccountID:    null.IntFrom(s.unmuxedAccountToID[s.unmuxedOpSourceAccount.Address()]),
 			CounterOfferID:      null.IntFrom(EncodeOfferId(uint64(toid.New(int32(ledger.Header.LedgerSeq), 1, 9).ToInt64()), TOIDType)),
 			BaseAmount:          int64(s.strictSendTradeLP.AmountSold()),
 			BaseLiquidityPoolID: null.IntFrom(s.lpToID[s.strictSendTradeLP.MustLiquidityPool().LiquidityPoolId]),
-			BaseAssetID:         s.assetToID[s.strictSendTradeLP.AssetSold().String()].ID,
+			BaseAssetID:         s.assetToID[history.AssetKeyFromXDR(s.strictSendTradeLP.AssetSold())].ID,
 			BaseIsSeller:        true,
 			BaseIsExact:         null.BoolFrom(false),
 			LiquidityPoolFee:    null.IntFrom(int64(xdr.LiquidityPoolFeeV18)),
@@ -709,243 +723,78 @@ func (s *TradeProcessorTestSuiteLedger) mockReadTradeTransactions(
 		tx,
 	}
 
-	s.mockQ.On("NewTradeBatchInsertBuilder", maxBatchSize).
-		Return(s.mockBatchInsertBuilder).Once()
-
 	return inserts
 }
 
-func mapKeysToList(set map[string]int64) []string {
-	keys := make([]string, 0, len(set))
-	for key := range set {
-		keys = append(keys, key)
+func (s *TradeProcessorTestSuiteLedger) stubLoaders() {
+	for key, id := range s.unmuxedAccountToID {
+		s.accountLoader.Insert(key, id)
 	}
-	return keys
-}
-
-func uniq(list []string) []string {
-	var deduped []string
-	set := map[string]bool{}
-	for _, s := range list {
-		if set[s] {
-			continue
-		}
-		deduped = append(deduped, s)
-		set[s] = true
+	for key, id := range s.assetToID {
+		s.assetLoader.Insert(key, id.ID)
 	}
-	return deduped
+	for key, id := range s.lpToID {
+		s.lpLoader.Insert(PoolIDToString(key), id)
+	}
 }
 
 func (s *TradeProcessorTestSuiteLedger) TestIngestTradesSucceeds() {
 	ctx := context.Background()
-	inserts := s.mockReadTradeTransactions(s.processor.ledger)
+	inserts := s.mockReadTradeTransactions()
 
-	s.mockCreateAccounts(ctx)
-
-	s.mockCreateAssets(ctx)
-
-	s.mockCreateHistoryLiquidityPools(ctx)
+	for _, tx := range s.txs {
+		err := s.processor.ProcessTransaction(s.lcm, tx)
+		s.Assert().NoError(err)
+	}
 
 	for _, insert := range inserts {
-		s.mockBatchInsertBuilder.On("Add", ctx, []history.InsertTrade{
+		s.mockBatchInsertBuilder.On("Add", []history.InsertTrade{
 			insert,
 		}).Return(nil).Once()
 	}
+	s.mockBatchInsertBuilder.On("Exec", ctx, s.mockSession).Return(nil).Once()
+	s.stubLoaders()
 
-	s.mockBatchInsertBuilder.On("Exec", ctx).Return(nil).Once()
-
-	for _, tx := range s.txs {
-		err := s.processor.ProcessTransaction(ctx, tx)
-		s.Assert().NoError(err)
-	}
-
-	err := s.processor.Commit(ctx)
+	err := s.processor.Flush(ctx, s.mockSession)
 	s.Assert().NoError(err)
-}
-
-func (s *TradeProcessorTestSuiteLedger) mockCreateHistoryLiquidityPools(ctx context.Context) {
-	lpIDs, lpStrToID := s.extractLpIDs()
-	s.mockQ.On("CreateHistoryLiquidityPools", ctx, mock.AnythingOfType("[]string"), maxBatchSize).
-		Run(func(args mock.Arguments) {
-			arg := args.Get(1).([]string)
-			s.Assert().ElementsMatch(
-				lpIDs,
-				arg,
-			)
-		}).Return(lpStrToID, nil).Once()
-}
-
-func (s *TradeProcessorTestSuiteLedger) extractLpIDs() ([]string, map[string]int64) {
-	var lpIDs []string
-	lpStrToID := map[string]int64{}
-	for lpID, id := range s.lpToID {
-		lpIDStr := PoolIDToString(lpID)
-		lpIDs = append(lpIDs, lpIDStr)
-		lpStrToID[lpIDStr] = id
-	}
-	return lpIDs, lpStrToID
-}
-
-func (s *TradeProcessorTestSuiteLedger) TestCreateAccountsError() {
-	ctx := context.Background()
-	s.mockReadTradeTransactions(s.processor.ledger)
-
-	s.mockQ.On("CreateAccounts", ctx, mock.AnythingOfType("[]string"), maxBatchSize).
-		Run(func(args mock.Arguments) {
-			arg := args.Get(1).([]string)
-			s.Assert().ElementsMatch(
-				mapKeysToList(s.unmuxedAccountToID),
-				uniq(arg),
-			)
-		}).Return(map[string]int64{}, fmt.Errorf("create accounts error")).Once()
-
-	for _, tx := range s.txs {
-		err := s.processor.ProcessTransaction(ctx, tx)
-		s.Assert().NoError(err)
-	}
-
-	err := s.processor.Commit(ctx)
-
-	s.Assert().EqualError(err, "Error creating account ids: create accounts error")
-}
-
-func (s *TradeProcessorTestSuiteLedger) TestCreateAssetsError() {
-	ctx := context.Background()
-	s.mockReadTradeTransactions(s.processor.ledger)
-
-	s.mockCreateAccounts(ctx)
-
-	s.mockQ.On("CreateAssets", ctx, mock.AnythingOfType("[]xdr.Asset"), maxBatchSize).
-		Run(func(args mock.Arguments) {
-			arg := args.Get(1).([]xdr.Asset)
-			s.Assert().ElementsMatch(
-				s.assets,
-				arg,
-			)
-		}).Return(s.assetToID, fmt.Errorf("create assets error")).Once()
-
-	for _, tx := range s.txs {
-		err := s.processor.ProcessTransaction(ctx, tx)
-		s.Assert().NoError(err)
-	}
-
-	err := s.processor.Commit(ctx)
-	s.Assert().EqualError(err, "Error creating asset ids: create assets error")
-}
-
-func (s *TradeProcessorTestSuiteLedger) TestCreateHistoryLiquidityPoolsError() {
-	ctx := context.Background()
-	s.mockReadTradeTransactions(s.processor.ledger)
-
-	s.mockCreateAccounts(ctx)
-
-	s.mockCreateAssets(ctx)
-
-	lpIDs, lpStrToID := s.extractLpIDs()
-	s.mockQ.On("CreateHistoryLiquidityPools", ctx, mock.AnythingOfType("[]string"), maxBatchSize).
-		Run(func(args mock.Arguments) {
-			arg := args.Get(1).([]string)
-			s.Assert().ElementsMatch(
-				lpIDs,
-				arg,
-			)
-		}).Return(lpStrToID, fmt.Errorf("create liqudity pool id error")).Once()
-
-	for _, tx := range s.txs {
-		err := s.processor.ProcessTransaction(ctx, tx)
-		s.Assert().NoError(err)
-	}
-
-	err := s.processor.Commit(ctx)
-	s.Assert().EqualError(err, "Error creating pool ids: create liqudity pool id error")
-}
-
-func (s *TradeProcessorTestSuiteLedger) mockCreateAssets(ctx context.Context) {
-	s.mockQ.On("CreateAssets", ctx, mock.AnythingOfType("[]xdr.Asset"), maxBatchSize).
-		Run(func(args mock.Arguments) {
-			arg := args.Get(1).([]xdr.Asset)
-			s.Assert().ElementsMatch(
-				s.assets,
-				arg,
-			)
-		}).Return(s.assetToID, nil).Once()
-}
-
-func (s *TradeProcessorTestSuiteLedger) mockCreateAccounts(ctx context.Context) {
-	s.mockQ.On("CreateAccounts", ctx, mock.AnythingOfType("[]string"), maxBatchSize).
-		Run(func(args mock.Arguments) {
-			arg := args.Get(1).([]string)
-			s.Assert().ElementsMatch(
-				mapKeysToList(s.unmuxedAccountToID),
-				uniq(arg),
-			)
-		}).Return(s.unmuxedAccountToID, nil).Once()
+	s.Assert().Equal(s.processor.GetStats().count, int64(8))
+	s.processor.ResetStats()
+	s.Assert().Equal(s.processor.GetStats().count, int64(0))
 }
 
 func (s *TradeProcessorTestSuiteLedger) TestBatchAddError() {
 	ctx := context.Background()
-	s.mockReadTradeTransactions(s.processor.ledger)
-
-	s.mockCreateAccounts(ctx)
-
-	s.mockCreateAssets(ctx)
-
-	s.mockCreateHistoryLiquidityPools(ctx)
-
-	s.mockBatchInsertBuilder.On("Add", ctx, mock.AnythingOfType("[]history.InsertTrade")).
-		Return(fmt.Errorf("batch add error")).Once()
+	s.mockReadTradeTransactions()
 
 	for _, tx := range s.txs {
-		err := s.processor.ProcessTransaction(ctx, tx)
+		err := s.processor.ProcessTransaction(s.lcm, tx)
 		s.Assert().NoError(err)
 	}
 
-	err := s.processor.Commit(ctx)
+	s.stubLoaders()
+	s.mockBatchInsertBuilder.On("Add", mock.AnythingOfType("[]history.InsertTrade")).
+		Return(fmt.Errorf("batch add error")).Once()
+
+	err := s.processor.Flush(ctx, s.mockSession)
 	s.Assert().EqualError(err, "Error adding trade to batch: batch add error")
 }
 
 func (s *TradeProcessorTestSuiteLedger) TestBatchExecError() {
 	ctx := context.Background()
-	insert := s.mockReadTradeTransactions(s.processor.ledger)
+	insert := s.mockReadTradeTransactions()
 
-	s.mockCreateAccounts(ctx)
-
-	s.mockCreateAssets(ctx)
-
-	s.mockCreateHistoryLiquidityPools(ctx)
-
-	s.mockBatchInsertBuilder.On("Add", ctx, mock.AnythingOfType("[]history.InsertTrade")).
-		Return(nil).Times(len(insert))
-	s.mockBatchInsertBuilder.On("Exec", ctx).Return(fmt.Errorf("exec error")).Once()
 	for _, tx := range s.txs {
-		err := s.processor.ProcessTransaction(ctx, tx)
+		err := s.processor.ProcessTransaction(s.lcm, tx)
 		s.Assert().NoError(err)
 	}
 
-	err := s.processor.Commit(ctx)
+	s.stubLoaders()
+	s.mockBatchInsertBuilder.On("Add", mock.AnythingOfType("[]history.InsertTrade")).
+		Return(nil).Times(len(insert))
+	s.mockBatchInsertBuilder.On("Exec", ctx, s.mockSession).Return(fmt.Errorf("exec error")).Once()
+
+	err := s.processor.Flush(ctx, s.mockSession)
 	s.Assert().EqualError(err, "Error flushing operation batch: exec error")
-}
-
-func (s *TradeProcessorTestSuiteLedger) TestIgnoreCheckIfSmallLedger() {
-	ctx := context.Background()
-	insert := s.mockReadTradeTransactions(s.processor.ledger)
-
-	s.mockCreateAccounts(ctx)
-
-	s.mockCreateAssets(ctx)
-
-	s.mockCreateHistoryLiquidityPools(ctx)
-	s.mockBatchInsertBuilder.On("Add", ctx, mock.AnythingOfType("[]history.InsertTrade")).
-		Return(nil).Times(len(insert))
-	s.mockBatchInsertBuilder.On("Exec", ctx).Return(nil).Once()
-
-	for _, tx := range s.txs {
-		err := s.processor.ProcessTransaction(ctx, tx)
-		s.Assert().NoError(err)
-	}
-
-	err := s.processor.Commit(ctx)
-	s.Assert().NoError(err)
 }
 
 func TestTradeProcessor_ProcessTransaction_MuxedAccount(t *testing.T) {
@@ -957,7 +806,7 @@ func TestTradeProcessor_ProcessTransaction_MuxedAccount(t *testing.T) {
 			Ed25519: *unmuxed.Ed25519,
 		},
 	}
-	tx := createTransaction(true, 1)
+	tx := createTransaction(true, 1, 2)
 	tx.Index = 1
 	tx.Envelope.Operations()[0].Body = xdr.OperationBody{
 		Type: xdr.OperationTypePayment,
@@ -973,7 +822,7 @@ func TestTradeProcessor_RoundingSlippage_Big(t *testing.T) {
 	s := &TradeProcessorTestSuiteLedger{}
 	s.SetT(t)
 	s.SetupTest()
-	s.mockReadTradeTransactions(s.processor.ledger)
+	s.mockReadTradeTransactions()
 
 	assetDeposited := xdr.MustNewCreditAsset("MAD", s.unmuxedSourceAccount.Address())
 	assetDisbursed := xdr.MustNewCreditAsset("GRE", s.unmuxedSourceAccount.Address())
@@ -1005,7 +854,7 @@ func TestTradeProcessor_RoundingSlippage_Small(t *testing.T) {
 	s := &TradeProcessorTestSuiteLedger{}
 	s.SetT(t)
 	s.SetupTest()
-	s.mockReadTradeTransactions(s.processor.ledger)
+	s.mockReadTradeTransactions()
 
 	assetDeposited := xdr.MustNewCreditAsset("MAD", s.unmuxedSourceAccount.Address())
 	assetDisbursed := xdr.MustNewCreditAsset("GRE", s.unmuxedSourceAccount.Address())

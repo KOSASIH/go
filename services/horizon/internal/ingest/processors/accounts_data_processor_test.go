@@ -6,10 +6,11 @@ import (
 	"context"
 	"testing"
 
+	"github.com/stretchr/testify/suite"
+
 	"github.com/stellar/go/ingest"
 	"github.com/stellar/go/services/horizon/internal/db2/history"
 	"github.com/stellar/go/xdr"
-	"github.com/stretchr/testify/suite"
 )
 
 func TestAccountsDataProcessorTestSuiteState(t *testing.T) {
@@ -18,14 +19,21 @@ func TestAccountsDataProcessorTestSuiteState(t *testing.T) {
 
 type AccountsDataProcessorTestSuiteState struct {
 	suite.Suite
-	ctx       context.Context
-	processor *AccountDataProcessor
-	mockQ     *history.MockQData
+	ctx                               context.Context
+	processor                         *AccountDataProcessor
+	mockQ                             *history.MockQData
+	mockAccountDataBatchInsertBuilder *history.MockAccountDataBatchInsertBuilder
 }
 
 func (s *AccountsDataProcessorTestSuiteState) SetupTest() {
 	s.ctx = context.Background()
 	s.mockQ = &history.MockQData{}
+
+	s.mockAccountDataBatchInsertBuilder = &history.MockAccountDataBatchInsertBuilder{}
+	s.mockQ.On("NewAccountDataBatchInsertBuilder").
+		Return(s.mockAccountDataBatchInsertBuilder)
+	s.mockAccountDataBatchInsertBuilder.On("Exec", s.ctx).Return(nil)
+	s.mockAccountDataBatchInsertBuilder.On("Len").Return(1).Maybe()
 
 	s.processor = NewAccountDataProcessor(s.mockQ)
 }
@@ -60,7 +68,7 @@ func (s *AccountsDataProcessorTestSuiteState) TestCreatesAccounts() {
 		Value:              history.AccountDataValue(data.DataValue),
 		LastModifiedLedger: uint32(entry.LastModifiedLedgerSeq),
 	}
-	s.mockQ.On("UpsertAccountData", s.ctx, []history.Data{historyData}).Return(nil).Once()
+	s.mockAccountDataBatchInsertBuilder.On("Add", historyData).Return(nil).Once()
 
 	err := s.processor.ProcessChange(s.ctx, ingest.Change{
 		Type: xdr.LedgerEntryTypeData,
@@ -76,14 +84,21 @@ func TestAccountsDataProcessorTestSuiteLedger(t *testing.T) {
 
 type AccountsDataProcessorTestSuiteLedger struct {
 	suite.Suite
-	ctx       context.Context
-	processor *AccountDataProcessor
-	mockQ     *history.MockQData
+	ctx                               context.Context
+	processor                         *AccountDataProcessor
+	mockQ                             *history.MockQData
+	mockAccountDataBatchInsertBuilder *history.MockAccountDataBatchInsertBuilder
 }
 
 func (s *AccountsDataProcessorTestSuiteLedger) SetupTest() {
 	s.ctx = context.Background()
 	s.mockQ = &history.MockQData{}
+
+	s.mockAccountDataBatchInsertBuilder = &history.MockAccountDataBatchInsertBuilder{}
+	s.mockQ.On("NewAccountDataBatchInsertBuilder").
+		Return(s.mockAccountDataBatchInsertBuilder)
+	s.mockAccountDataBatchInsertBuilder.On("Exec", s.ctx).Return(nil)
+	s.mockAccountDataBatchInsertBuilder.On("Len").Return(1).Maybe()
 
 	s.processor = NewAccountDataProcessor(s.mockQ)
 }
@@ -105,6 +120,14 @@ func (s *AccountsDataProcessorTestSuiteLedger) TestNewAccountData() {
 	}
 	lastModifiedLedgerSeq := xdr.Uint32(123)
 
+	historyData := history.Data{
+		AccountID:          data.AccountId.Address(),
+		Name:               string(data.DataName),
+		Value:              history.AccountDataValue(data.DataValue),
+		LastModifiedLedger: uint32(lastModifiedLedgerSeq),
+	}
+	s.mockAccountDataBatchInsertBuilder.On("Add", historyData).Return(nil).Once()
+
 	err := s.processor.ProcessChange(s.ctx, ingest.Change{
 		Type: xdr.LedgerEntryTypeData,
 		Pre:  nil,
@@ -117,42 +140,6 @@ func (s *AccountsDataProcessorTestSuiteLedger) TestNewAccountData() {
 		},
 	})
 	s.Assert().NoError(err)
-
-	updatedData := xdr.DataEntry{
-		AccountId: xdr.MustAddress("GC3C4AKRBQLHOJ45U4XG35ESVWRDECWO5XLDGYADO6DPR3L7KIDVUMML"),
-		DataName:  "test",
-		DataValue: []byte{2, 2, 2, 2},
-	}
-
-	updatedEntry := xdr.LedgerEntry{
-		Data: xdr.LedgerEntryData{
-			Type: xdr.LedgerEntryTypeData,
-			Data: &updatedData,
-		},
-		LastModifiedLedgerSeq: lastModifiedLedgerSeq,
-	}
-
-	err = s.processor.ProcessChange(s.ctx, ingest.Change{
-		Type: xdr.LedgerEntryTypeData,
-		Pre: &xdr.LedgerEntry{
-			Data: xdr.LedgerEntryData{
-				Type: xdr.LedgerEntryTypeData,
-				Data: &data,
-			},
-			LastModifiedLedgerSeq: lastModifiedLedgerSeq - 1,
-		},
-		Post: &updatedEntry,
-	})
-	s.Assert().NoError(err)
-
-	// We use LedgerEntryChangesCache so all changes are squashed
-	historyData := history.Data{
-		AccountID:          updatedData.AccountId.Address(),
-		Name:               string(updatedData.DataName),
-		Value:              history.AccountDataValue(updatedData.DataValue),
-		LastModifiedLedger: uint32(updatedEntry.LastModifiedLedgerSeq),
-	}
-	s.mockQ.On("UpsertAccountData", s.ctx, []history.Data{historyData}).Return(nil).Once()
 }
 
 func (s *AccountsDataProcessorTestSuiteLedger) TestUpdateAccountData() {
@@ -196,6 +183,7 @@ func (s *AccountsDataProcessorTestSuiteLedger) TestUpdateAccountData() {
 		Value:              history.AccountDataValue(updatedData.DataValue),
 		LastModifiedLedger: uint32(updatedEntry.LastModifiedLedgerSeq),
 	}
+	s.mockAccountDataBatchInsertBuilder.On("Add", historyData).Return(nil).Once()
 	s.mockQ.On("UpsertAccountData", s.ctx, []history.Data{historyData}).Return(nil).Once()
 }
 

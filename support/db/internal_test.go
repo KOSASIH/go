@@ -7,6 +7,7 @@ const testSchema = `
 CREATE TABLE  IF NOT EXISTS people (
     name character varying NOT NULL,
     hunger_level integer NOT NULL,
+    json_value jsonb,
     PRIMARY KEY (name)
 );
 DELETE FROM people;

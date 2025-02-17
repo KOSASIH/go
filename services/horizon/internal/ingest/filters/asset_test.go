@@ -25,12 +25,14 @@ func TestAssetFilterAllowsOnMatch(t *testing.T) {
 	err := filter.RefreshAssetFilter(filterConfig)
 	tt.NoError(err)
 
-	result, err := filter.FilterTransaction(ctx, getAssetTestV1Tx(t, "GD6WNNTW664WH7FXC5RUMUTF7P5QSURC2IT36VOQEEGFZ4UWUEQGECAL"))
+	isEnabled, result, err := filter.FilterTransaction(ctx, getAssetTestV1Tx(t, "GD6WNNTW664WH7FXC5RUMUTF7P5QSURC2IT36VOQEEGFZ4UWUEQGECAL"))
 	tt.NoError(err)
+	tt.Equal(isEnabled, true)
 	tt.Equal(result, true)
 
-	result, err = filter.FilterTransaction(ctx, getAssetTestV0Tx(t, "GD6WNNTW664WH7FXC5RUMUTF7P5QSURC2IT36VOQEEGFZ4UWUEQGECAL"))
+	isEnabled, result, err = filter.FilterTransaction(ctx, getAssetTestV0Tx(t, "GD6WNNTW664WH7FXC5RUMUTF7P5QSURC2IT36VOQEEGFZ4UWUEQGECAL"))
 	tt.NoError(err)
+	tt.Equal(isEnabled, true)
 	tt.Equal(result, true)
 }
 
@@ -47,12 +49,14 @@ func TestAssetFilterAllowsWhenEmptyWhitelist(t *testing.T) {
 	err := filter.RefreshAssetFilter(filterConfig)
 	tt.NoError(err)
 
-	result, err := filter.FilterTransaction(ctx, getAssetTestV1Tx(t, "GD6WNNTW664WH7FXC5RUMUTF7P5QSURC2IT36VOQEEGFZ4UWUEQGECAL"))
+	isEnabled, result, err := filter.FilterTransaction(ctx, getAssetTestV1Tx(t, "GD6WNNTW664WH7FXC5RUMUTF7P5QSURC2IT36VOQEEGFZ4UWUEQGECAL"))
 	tt.NoError(err)
+	tt.Equal(isEnabled, false)
 	tt.Equal(result, true)
 
-	result, err = filter.FilterTransaction(ctx, getAssetTestV0Tx(t, "GD6WNNTW664WH7FXC5RUMUTF7P5QSURC2IT36VOQEEGFZ4UWUEQGECAL"))
+	isEnabled, result, err = filter.FilterTransaction(ctx, getAssetTestV0Tx(t, "GD6WNNTW664WH7FXC5RUMUTF7P5QSURC2IT36VOQEEGFZ4UWUEQGECAL"))
 	tt.NoError(err)
+	tt.Equal(isEnabled, false)
 	tt.Equal(result, true)
 }
 
@@ -69,9 +73,10 @@ func TestAssetFilterAllowsWhenDisabled(t *testing.T) {
 	err := filter.RefreshAssetFilter(filterConfig)
 	tt.NoError(err)
 
-	result, err := filter.FilterTransaction(ctx, getAssetTestV1Tx(t, "GD6WNNTW664WH7FXC5RUMUTF7P5QSURC2IT36VOQEEGFZ4UWUEQGECAL"))
+	isEnabled, result, err := filter.FilterTransaction(ctx, getAssetTestV1Tx(t, "GD6WNNTW664WH7FXC5RUMUTF7P5QSURC2IT36VOQEEGFZ4UWUEQGECAL"))
 	tt.NoError(err)
 	// there was no match on filter rules, but since filter was disabled also, it should allow all
+	tt.Equal(isEnabled, false)
 	tt.Equal(result, true)
 }
 
@@ -89,12 +94,14 @@ func TestAssetFilterDoesNotAllowV1WhenNoMatch(t *testing.T) {
 	err := filter.RefreshAssetFilter(filterConfig)
 	tt.NoError(err)
 
-	result, err := filter.FilterTransaction(ctx, getAssetTestV1Tx(t, "GD6WNNTW664WH7FXC5RUMUTF7P5QSURC2IT36VOQEEGFZ4UWUEQGECAL"))
+	isEnabled, result, err := filter.FilterTransaction(ctx, getAssetTestV1Tx(t, "GD6WNNTW664WH7FXC5RUMUTF7P5QSURC2IT36VOQEEGFZ4UWUEQGECAL"))
 	tt.NoError(err)
+	tt.Equal(isEnabled, true)
 	tt.Equal(result, false)
 
-	result, err = filter.FilterTransaction(ctx, getAssetTestV0Tx(t, "GD6WNNTW664WH7FXC5RUMUTF7P5QSURC2IT36VOQEEGFZ4UWUEQGECAL"))
+	isEnabled, result, err = filter.FilterTransaction(ctx, getAssetTestV0Tx(t, "GD6WNNTW664WH7FXC5RUMUTF7P5QSURC2IT36VOQEEGFZ4UWUEQGECAL"))
 	tt.NoError(err)
+	tt.Equal(isEnabled, true)
 	tt.Equal(result, false)
 }
 

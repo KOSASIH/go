@@ -3,9 +3,11 @@ package history
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"strconv"
 
 	sq "github.com/Masterminds/squirrel"
+
 	"github.com/stellar/go/support/errors"
 )
 
@@ -18,6 +20,7 @@ const (
 	stateInvalid                    = "exp_state_invalid"
 	offerCompactionSequence         = "offer_compaction_sequence"
 	liquidityPoolCompactionSequence = "liquidity_pool_compaction_sequence"
+	lookupTableReapOffsetSuffix     = "_reap_offset"
 )
 
 // GetLastLedgerIngestNonBlocking works like GetLastLedgerIngest but
@@ -201,6 +204,32 @@ func (q *Q) getValueFromStore(ctx context.Context, key string, forUpdate bool) (
 	}
 
 	return value, nil
+}
+
+func (q *Q) getLookupTableReapOffset(ctx context.Context, table string) (int64, error) {
+	query := sq.Select("value").
+		From("key_value_store").
+		Where(map[string]interface{}{
+			"key": table + lookupTableReapOffsetSuffix,
+		})
+	var text string
+	err := q.Get(ctx, &text, query)
+	if err != nil {
+		if errors.Cause(err) == sql.ErrNoRows {
+			return 0, nil
+		}
+		return 0, err
+	}
+	var offset int64
+	offset, err = strconv.ParseInt(text, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid offset: %s for table %s", text, table)
+	}
+	return offset, nil
+}
+
+func (q *Q) updateLookupTableReapOffset(ctx context.Context, table string, offset int64) error {
+	return q.updateValueInStore(ctx, table+lookupTableReapOffsetSuffix, strconv.FormatInt(offset, 10))
 }
 
 // updateValueInStore updates a value for a given key in KV store
